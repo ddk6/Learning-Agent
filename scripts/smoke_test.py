@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.main import build_agent  # noqa: E402
+from app.tools.experiment_tools import register_experiment_tools  # noqa: E402
 from app.tools.note_tools import register_note_tools  # noqa: E402
 from app.tools.registry import ToolRegistry  # noqa: E402
 
@@ -115,10 +116,31 @@ def main() -> None:
         assert_contains(agent.run("/search Agent 主循环"), "agent.md")
         assert_contains(agent.run("/remember smoke test memory"), "smoke test memory")
         assert_contains(agent.run("/memory"), "smoke test memory")
+        experiment_plan = agent.run("/experiment 比较 40/50/60 摄氏度下的反应效率")
+        assert_contains(experiment_plan, "实验工作流草案")
+        assert_contains(experiment_plan, "温度梯度")
+        assert_contains(experiment_plan, "失败与降级路径")
 
     test_note_file_types()
+    test_experiment_tool()
 
     print("Smoke test passed.")
+
+
+def test_experiment_tool() -> None:
+    registry = ToolRegistry()
+    register_experiment_tools(registry)
+
+    result = registry.call(
+        "plan_experiment_workflow",
+        {
+            "objective": "比较 40/50/60 摄氏度下的反应效率",
+            "constraints": ["只生成计划，不控制真实设备"],
+        },
+    )
+    assert_contains(result, "Pilot")
+    assert_contains(result, "40 C, 50 C, 60 C")
+    assert_contains(result, "只生成计划，不控制真实设备")
 
 
 if __name__ == "__main__":

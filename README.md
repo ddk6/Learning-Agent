@@ -18,6 +18,7 @@
 - 读取 `notes/` 下的学习资料，支持 Markdown、TXT、PDF、DOCX
 - 搜索 `notes/` 下的学习资料
 - 保存和查看学习记忆
+- 生成实验自动化工作流 Agent 草案，用于把实习方向转成可运行原型
 - 使用隔离临时记忆文件运行 smoke test，避免污染真实学习记忆
 
 ## 目录结构
@@ -37,6 +38,7 @@ app/
   tools/
     base.py               # 工具定义
     registry.py           # 工具注册器
+    experiment_tools.py   # 实验自动化工作流规划工具
     note_tools.py         # 笔记/资料工具
     memory_tools.py       # 记忆工具
 notes/
@@ -105,6 +107,7 @@ python scripts/smoke_test.py
 /search Agent 主循环
 /remember 今天理解了 Agent = 模型 + 工具 + 控制流程
 /memory
+/experiment 比较 40/50/60 摄氏度下的反应效率
 ```
 
 ## 接入大模型
@@ -140,7 +143,29 @@ Agent 会把 `search_notes`、`read_note`、`save_memory`、`list_memory` 这些
 帮我搜索笔记里关于 Agent 主循环的内容，并总结成 3 点
 请记住：我已经完成 Learning Agent 的大模型接入
 查看最近的学习记忆
+帮我生成一个比较 40/50/60 摄氏度下反应效率的实验工作流草案
 ```
+
+## 实习方向：实验自动化工作流 Agent
+
+当前项目已经加入一个最小的实验工作流规划工具：`plan_experiment_workflow`。
+
+它不会控制真实设备，只负责把用户的实验目标转成可审查的工作流草案，包括：
+
+- 实验目标与成熟度标注
+- 参数表
+- 推荐步骤
+- 失败与降级路径
+- 风险提示
+- 结果记录模板
+
+本地演示命令：
+
+```powershell
+python -m app.main "/experiment 比较 40/50/60 摄氏度下的反应效率"
+```
+
+这个能力的定位是 Pilot：适合用于实习竞品调研、工作流抽象和 PoC 展示；在接入真实实验设备前，必须补充权限校验、人工确认、审计日志、设备状态检查和急停机制。
 
 ## 学习路线
 

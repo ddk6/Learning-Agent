@@ -6,6 +6,7 @@ from pathlib import Path
 from app.agents.simple_agent import SimpleAgent
 from app.config import load_config
 from app.memory.store import MemoryStore
+from app.tools.experiment_tools import register_experiment_tools
 from app.tools.memory_tools import register_memory_tools
 from app.tools.note_tools import register_note_tools
 from app.tools.registry import ToolRegistry
@@ -25,6 +26,7 @@ def build_agent(memory_file: Path | None = None) -> SimpleAgent:
     memory_store = MemoryStore(memory_file or config.memory_file)
     register_memory_tools(registry, memory_store)
     register_note_tools(registry, config.notes_dir)
+    register_experiment_tools(registry)
     return SimpleAgent(config=config, registry=registry, memory_store=memory_store)
 
 

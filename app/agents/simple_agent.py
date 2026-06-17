@@ -59,6 +59,10 @@ class SimpleAgent:
             return self.registry.call("save_memory", {"content": rest, "tag": "learning"})
         if command == "/memory":
             return self.registry.call("list_memory")
+        if command == "/experiment":
+            if not rest:
+                return "用法：/experiment 比较 40/50/60 摄氏度下的反应效率"
+            return self.registry.call("plan_experiment_workflow", {"objective": rest})
         if command == "/exit":
             return "bye"
 
@@ -134,6 +138,8 @@ class SimpleAgent:
 /search Agent 主循环           搜索笔记内容
 /remember 今天理解了工具调用   保存一条学习记忆
 /memory                        查看最近学习记忆
+/experiment 比较 40/50/60 摄氏度下的反应效率
+                               生成实验自动化工作流草案
 /exit                          退出 CLI
 
 配置大模型后，也可以直接输入自然语言，例如：
