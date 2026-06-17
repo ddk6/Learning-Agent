@@ -1,0 +1,2 @@
+# Runtime dependencies.
+pypdf>=4.3,<6
