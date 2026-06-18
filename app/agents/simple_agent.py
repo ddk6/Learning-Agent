@@ -6,34 +6,65 @@ from typing import Any
 from app.config import AppConfig
 from app.core.llm import LLMError, OpenAICompatibleClient
 from app.core.prompts import SYSTEM_PROMPT
-from app.memory.store import MemoryStore
+from app.proposals.experiment import (
+    create_experiment_proposal,
+    diagnose_experiment_issue,
+    render_proposal_card,
+    render_proposal_detail,
+)
+from app.proposals.store import ProposalStore
+from app.session.state import SessionState
 from app.tools.registry import ToolRegistry
 
 
 class SimpleAgent:
-    def __init__(self, config: AppConfig, registry: ToolRegistry, memory_store: MemoryStore) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        registry: ToolRegistry,
+        memory_store: Any,
+        proposal_store: ProposalStore,
+        session_state: Any | None = None,
+    ) -> None:
         self.config = config
         self.registry = registry
         self.memory_store = memory_store
+        self.proposal_store = proposal_store
+        self.session = session_state or SessionState()
         self.llm = OpenAICompatibleClient(config)
 
     def run(self, user_input: str) -> str:
         # Agent 的第一层分流：显式 / 命令走本地确定性逻辑，普通自然语言才交给 LLM。
         # 这样即使没有 API Key，项目也能保持一个可运行、可测试的最小闭环。
-        user_input = user_input.strip()
+        user_input = user_input.strip().lstrip("\ufeff")
         if not user_input:
             return "请输入内容，或输入 /help 查看命令。"
 
         if user_input.startswith("/"):
-            return self._run_local_command(user_input)
+            response = self._run_local_command(user_input)
+            if self._should_record_session_turn(user_input):
+                self.session.record_turn(user_input, response)
+            return response
+
+        if self._is_tool_inventory_question(user_input):
+            response = self._tool_inventory_text()
+            self.session.record_turn(user_input, response)
+            return response
+
+        if self._is_save_last_answer_request(user_input):
+            return self._save_last_answer()
 
         if not self.config.has_llm:
-            return (
+            response = (
                 "当前是本地演示模式，还没有配置大模型。\n"
                 "你可以先使用 /help 查看本地命令，或配置 OPENAI_API_KEY 与 OPENAI_MODEL 后再用自然语言对话。"
             )
+            self.session.record_turn(user_input, response)
+            return response
 
-        return self._run_llm_turn(user_input)
+        response = self._run_llm_turn(user_input)
+        self.session.record_turn(user_input, response)
+        return response
 
     def _run_local_command(self, user_input: str) -> str:
         # 本地命令是学习阶段的“确定性工具入口”，用于验证工具实现本身是否正确。
@@ -43,6 +74,12 @@ class SimpleAgent:
 
         if command == "/help":
             return self._help_text()
+        if command == "/session":
+            return self.session.summary()
+        if command == "/save-last":
+            return self._save_last_answer()
+        if command == "/tools":
+            return self._tool_inventory_text()
         if command == "/notes":
             return self.registry.call("list_notes")
         if command == "/read":
@@ -62,11 +99,94 @@ class SimpleAgent:
         if command == "/experiment":
             if not rest:
                 return "用法：/experiment 比较 40/50/60 摄氏度下的反应效率"
-            return self.registry.call("plan_experiment_workflow", {"objective": rest})
+            return self._create_experiment_proposal(rest)
+        if command == "/proposal":
+            return self._current_proposal_card()
+        if command == "/proposal-detail":
+            return self._current_proposal_detail()
+        if command == "/apply-proposal":
+            return self._apply_current_proposal()
+        if command == "/diagnose":
+            return diagnose_experiment_issue(self.proposal_store.current(), rest)
         if command == "/exit":
             return "bye"
 
         return f"未知命令：{command}\n输入 /help 查看可用命令。"
+
+    def _should_record_session_turn(self, user_input: str) -> bool:
+        command = user_input.partition(" ")[0]
+        return command not in {"/session", "/save-last", "/exit"}
+
+    def _is_tool_inventory_question(self, user_input: str) -> bool:
+        normalized = user_input.lower()
+        tool_words = ("工具", "tool", "tools", "function", "函数")
+        inventory_words = ("几个", "哪些", "列表", "可以调用", "有什么", "当前有")
+        return any(word in normalized for word in tool_words) and any(
+            word in normalized for word in inventory_words
+        )
+
+    def _tool_inventory_text(self) -> str:
+        summaries = self.registry.summaries()
+        lines = [f"当前本项目注册了 {len(summaries)} 个工具："]
+        for index, (name, description) in enumerate(summaries, start=1):
+            lines.append(f"{index}. `{name}`：{description}")
+        lines.append("")
+        lines.append("说明：这里列出的只是真正传给本项目 LLM Tool Calling 的工具，不包括 Codex 外层开发工具。")
+        return "\n".join(lines)
+
+    def _is_save_last_answer_request(self, user_input: str) -> bool:
+        normalized = user_input.lower()
+        save_words = ("保存", "记住", "记录", "存一下", "save")
+        reference_words = ("刚才", "上面", "上一轮", "这三个", "这些", "它", "last")
+        transform_words = ("改写", "重写", "整理成", "总结成", "一句话")
+        return (
+            any(word in normalized for word in save_words)
+            and any(word in normalized for word in reference_words)
+            and not any(word in normalized for word in transform_words)
+        )
+
+    def _save_last_answer(self) -> str:
+        if not self.session.last_answer:
+            return "当前会话还没有上一轮回答可保存。"
+        item = self.memory_store.add(content=self.session.last_answer, tag="session")
+        return f"已保存上一轮回答到长期记忆 #{item['id']} [session]。"
+
+    def _create_experiment_proposal(self, objective: str) -> str:
+        proposal = create_experiment_proposal(objective, self.registry)
+        proposal = self.proposal_store.save_current(proposal)
+        return render_proposal_card(proposal)
+
+    def _current_proposal_card(self) -> str:
+        proposal = self.proposal_store.current()
+        if proposal is None:
+            return "当前没有 Proposal。先使用 `/experiment ...` 生成一个实验工作流提案。"
+        return render_proposal_card(proposal)
+
+    def _current_proposal_detail(self) -> str:
+        proposal = self.proposal_store.current()
+        if proposal is None:
+            return "当前没有 Proposal。先使用 `/experiment ...` 生成一个实验工作流提案。"
+        return render_proposal_detail(proposal)
+
+    def _apply_current_proposal(self) -> str:
+        proposal = self.proposal_store.current()
+        if proposal is None:
+            return "当前没有 Proposal，无法应用。"
+        if proposal.get("status") == "need_info":
+            return "当前 Proposal 仍是 need_info 状态，不能应用。请先补充信息并重新生成。"
+        if proposal.get("status") == "applied":
+            return "当前 Proposal 已应用过。为避免重复执行，本命令不会再次应用。"
+
+        applied = self.proposal_store.mark_applied()
+        item = self.memory_store.add(
+            content=f"已应用实验工作流 Proposal：{applied.get('summary', '')}",
+            tag="proposal",
+        )
+        return (
+            "Proposal 已应用到本地记录。\n"
+            "当前阶段没有控制真实设备，也没有写入外部系统。\n"
+            f"审计记忆：#{item['id']}"
+        )
 
     def _run_llm_turn(self, user_input: str) -> str:
         # 最小 Tool Calling 循环：
@@ -75,6 +195,7 @@ class SimpleAgent:
         # 3. 把工具结果再交回模型，让模型组织最终答案。
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
+            *self.session.recent_messages(),
             {"role": "user", "content": user_input},
         ]
         tools = self.registry.tool_schemas()
@@ -123,6 +244,7 @@ class SimpleAgent:
             result = self.registry.call(name, arguments)
         except Exception as exc:
             result = f"工具 {name} 执行失败：{exc}"
+        self.session.record_tool_result(name, result)
 
         return {
             "role": "tool",
@@ -133,13 +255,20 @@ class SimpleAgent:
 
     def _help_text(self) -> str:
         return """本地演示命令：
+/session                       查看当前会话短期上下文
+/save-last                     保存上一轮 Agent 回答到长期记忆
+/tools                         查看当前项目注册的工具
 /notes                         列出 notes/ 下的笔记
 /read agent.md                 读取某篇笔记
 /search Agent 主循环           搜索笔记内容
 /remember 今天理解了工具调用   保存一条学习记忆
 /memory                        查看最近学习记忆
 /experiment 比较 40/50/60 摄氏度下的反应效率
-                               生成实验自动化工作流草案
+                               生成实验工作流 Proposal
+/proposal                      查看当前 Proposal 卡片
+/proposal-detail               查看当前 Proposal 详情
+/apply-proposal                人工确认后应用到本地记录
+/diagnose 端口连接超时        基于当前 Proposal 生成诊断建议
 /exit                          退出 CLI
 
 配置大模型后，也可以直接输入自然语言，例如：

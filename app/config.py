@@ -16,6 +16,8 @@ class AppConfig:
     notes_dir: Path
     data_dir: Path
     memory_file: Path
+    proposal_file: Path
+    database_file: Path
     openai_api_key: str
     openai_model: str
     openai_base_url: str
@@ -68,6 +70,8 @@ def load_config() -> AppConfig:
         notes_dir=notes_dir,
         data_dir=data_dir,
         memory_file=data_dir / "memory.json",
+        proposal_file=data_dir / "proposals.json",
+        database_file=data_dir / "learning_agent.db",
         openai_api_key=os.environ.get("OPENAI_API_KEY", "").strip(),
         openai_model=os.environ.get("OPENAI_MODEL", "").strip(),
         openai_base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip(),

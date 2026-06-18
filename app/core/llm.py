@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import http.client
 import json
+import socket
 import urllib.error
 import urllib.request
 from typing import Any
@@ -61,6 +63,10 @@ class OpenAICompatibleClient:
             raise LLMError(f"LLM HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             raise LLMError(f"LLM network error: {exc.reason}") from exc
+        except http.client.RemoteDisconnected as exc:
+            raise LLMError("LLM network error: remote end closed connection without response.") from exc
+        except socket.timeout as exc:
+            raise LLMError("LLM network error: request timed out.") from exc
         except json.JSONDecodeError as exc:
             raise LLMError("LLM response is not valid JSON.") from exc
 

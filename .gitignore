@@ -6,4 +6,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 data/memory.json
+data/proposals.json
+data/learning_agent.db
+data/learning_agent.db-shm
+data/learning_agent.db-wal
 notes/

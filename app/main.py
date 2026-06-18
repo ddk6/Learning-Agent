@@ -5,7 +5,8 @@ from pathlib import Path
 
 from app.agents.simple_agent import SimpleAgent
 from app.config import load_config
-from app.memory.store import MemoryStore
+from app.proposals.store import ProposalStore
+from app.storage.sqlite_store import SQLiteAppStore, SQLiteMemoryStore, SQLiteSessionState
 from app.tools.experiment_tools import register_experiment_tools
 from app.tools.memory_tools import register_memory_tools
 from app.tools.note_tools import register_note_tools
@@ -18,16 +19,33 @@ WELCOME = """Learning Agent 已启动。
 # 程序入口只负责交互。
 
 
-def build_agent(memory_file: Path | None = None) -> SimpleAgent:
+def build_agent(
+    memory_file: Path | None = None,
+    proposal_file: Path | None = None,
+    database_file: Path | None = None,
+    session_id: str = "default-cli",
+) -> SimpleAgent:
     # 组装依赖：配置、工具注册器、记忆存储。
     # 这一步相当于最小版 dependency injection，方便后续替换数据库、LLM 或工具实现。
     config = load_config()
     registry = ToolRegistry()
-    memory_store = MemoryStore(memory_file or config.memory_file)
+    sqlite_store = SQLiteAppStore(database_file or config.database_file)
+    sqlite_store.import_memories_from_json(memory_file or config.memory_file)
+    memory_store = SQLiteMemoryStore(sqlite_store)
+    session_state = SQLiteSessionState(sqlite_store, session_id=session_id)
+    if proposal_file is None and memory_file is not None:
+        proposal_file = memory_file.with_name("proposals.json")
+    proposal_store = ProposalStore(proposal_file or config.proposal_file)
     register_memory_tools(registry, memory_store)
     register_note_tools(registry, config.notes_dir)
     register_experiment_tools(registry)
-    return SimpleAgent(config=config, registry=registry, memory_store=memory_store)
+    return SimpleAgent(
+        config=config,
+        registry=registry,
+        memory_store=memory_store,
+        proposal_store=proposal_store,
+        session_state=session_state,
+    )
 
 
 def main() -> None:

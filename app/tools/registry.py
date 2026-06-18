@@ -32,3 +32,9 @@ class ToolRegistry:
 
     def names(self) -> list[str]:
         return sorted(self._tools)
+
+    def summaries(self) -> list[tuple[str, str]]:
+        return [
+            (name, tool.description)
+            for name, tool in sorted(self._tools.items())
+        ]

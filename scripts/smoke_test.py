@@ -108,18 +108,55 @@ def test_note_file_types() -> None:
 
 def main() -> None:
     with TemporaryDirectory() as temp_dir:
-        agent = build_agent(memory_file=Path(temp_dir) / "memory.json")
+        temp_path = Path(temp_dir)
+        database_file = temp_path / "learning_agent.db"
+        proposal_file = temp_path / "proposals.json"
+        agent = build_agent(
+            database_file=database_file,
+            proposal_file=proposal_file,
+            session_id="smoke-test",
+        )
 
         assert_contains(agent.run("/help"), "/notes")
+        tool_list = agent.run("/tools")
+        assert_contains(tool_list, "当前本项目注册了 6 个工具")
+        assert_contains(tool_list, "plan_experiment_workflow")
+        if "multi_tool_use.parallel" in tool_list:
+            raise AssertionError(f"Unexpected outer tool in local inventory:\n{tool_list}")
+        natural_tool_list = agent.run("当前有几个工具可以调用？")
+        assert_contains(natural_tool_list, "当前本项目注册了 6 个工具")
         assert_contains(agent.run("/notes"), "agent.md")
         assert_contains(agent.run("/read agent.md"), "最小 Agent 主循环")
+        assert_contains(agent.run("/session"), "上一轮用户输入：/read agent.md")
+        assert_contains(agent.run("/save-last"), "已保存上一轮回答到长期记忆")
+        assert_contains(agent.run("/memory"), "最小 Agent 主循环")
+        restarted_agent = build_agent(
+            database_file=database_file,
+            proposal_file=proposal_file,
+            session_id="smoke-test",
+        )
+        assert_contains(restarted_agent.run("/session"), "/read agent.md")
+        assert_contains(restarted_agent.run("/memory"), "最小 Agent 主循环")
         assert_contains(agent.run("/search Agent 主循环"), "agent.md")
         assert_contains(agent.run("/remember smoke test memory"), "smoke test memory")
         assert_contains(agent.run("/memory"), "smoke test memory")
-        experiment_plan = agent.run("/experiment 比较 40/50/60 摄氏度下的反应效率")
-        assert_contains(experiment_plan, "实验工作流草案")
-        assert_contains(experiment_plan, "温度梯度")
-        assert_contains(experiment_plan, "失败与降级路径")
+        need_info = agent.run("/experiment 帮我做实验")
+        assert_contains(need_info, "Proposal 状态：need_info")
+        assert_contains(need_info, "需要补充")
+        experiment_proposal = agent.run("/experiment 比较 40/50/60 摄氏度下的反应效率")
+        assert_contains(experiment_proposal, "Proposal 状态：ready")
+        assert_contains(experiment_proposal, "/apply-proposal")
+        assert_contains(agent.run("保存刚才的内容"), "已保存上一轮回答到长期记忆")
+        assert_contains(agent.run("/memory"), "Proposal 状态：ready")
+        proposal_detail = agent.run("/proposal-detail")
+        assert_contains(proposal_detail, "实验工作流草案")
+        assert_contains(proposal_detail, "温度梯度: 40 C, 50 C, 60 C")
+        assert_contains(proposal_detail, "应用计划")
+        apply_result = agent.run("/apply-proposal")
+        assert_contains(apply_result, "Proposal 已应用到本地记录")
+        assert_contains(agent.run("/apply-proposal"), "已应用过")
+        assert_contains(agent.run("/diagnose 端口连接超时"), "诊断建议")
+        assert_contains(agent.run("/memory"), "已应用实验工作流 Proposal")
 
     test_note_file_types()
     test_experiment_tool()
