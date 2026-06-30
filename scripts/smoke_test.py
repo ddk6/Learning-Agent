@@ -216,6 +216,13 @@ def main() -> None:
         after_false_positive = table_count(database_file, "memories")
         if after_false_positive != before_false_positive:
             raise AssertionError("False positive save-last request wrote a memory row.")
+        before_question = table_count(database_file, "memories")
+        question_result = agent.run("你刚才保存了我前面的对话？")
+        if "已保存上一轮回答到长期记忆" in question_result:
+            raise AssertionError("Question about previous saves should not trigger save-last.")
+        after_question = table_count(database_file, "memories")
+        if after_question != before_question:
+            raise AssertionError("Question about previous saves wrote a memory row.")
         need_info = agent.run("/experiment 帮我做实验")
         assert_contains(need_info, "Proposal 状态：need_info")
         assert_contains(need_info, "需要补充")

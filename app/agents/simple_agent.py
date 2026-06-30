@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any
 
@@ -244,40 +245,33 @@ class SimpleAgent:
 
     def _is_save_last_answer_request(self, user_input: str) -> bool:
         normalized = user_input.lower()
-        save_phrases = (
-            "保存",
-            "记住",
-            "存一下",
-            "存起来",
-            "记录一下",
-            "记录下来",
-            "帮我记录",
-            "save",
-        )
-        reference_phrases = (
-            "刚才",
-            "上面",
-            "上一轮",
-            "上轮",
-            "这三个",
-            "这些内容",
-            "这些要点",
-            "这些结论",
-            "这个结果",
-            "这个回答",
-            "这段回答",
-            "这条回答",
-            "它",
-            "last",
-        )
         transform_words = ("改写", "重写", "整理成", "总结成", "一句话")
-        noun_record_phrases = ("历史记录", "运行记录", "日志记录", "记录表")
-        return (
-            not any(word in normalized for word in noun_record_phrases)
-            and any(word in normalized for word in save_phrases)
-            and any(word in normalized for word in reference_phrases)
-            and not any(word in normalized for word in transform_words)
+        non_request_phrases = (
+            "保存了",
+            "已保存",
+            "是否保存",
+            "有没有保存",
+            "有保存",
+            "被保存",
+            "历史记录",
+            "运行记录",
+            "日志记录",
+            "记录表",
         )
+        question_markers = ("?", "？", "吗", "么", "是不是", "是否", "有没有")
+        if any(word in normalized for word in transform_words):
+            return False
+        if any(word in normalized for word in non_request_phrases):
+            return False
+        if any(word in normalized for word in question_markers):
+            return False
+
+        request_patterns = (
+            r"(请|帮我|麻烦)?(保存|记住|存一下|存起来|记录一下|记录下来).*(刚才|上面|上一轮|上轮|last|这些内容|这些要点|这些结论|这个结果|这个回答|这段回答|这条回答)",
+            r"把(刚才|上面|上一轮|上轮|这些内容|这些要点|这些结论|这个结果|这个回答|这段回答|这条回答).*(保存|记住|存一下|存起来|记录一下|记录下来)",
+            r"save\s+(last|previous)",
+        )
+        return any(re.search(pattern, normalized) for pattern in request_patterns)
 
     def _save_last_answer(self) -> str:
         if not self.session.last_answer:
