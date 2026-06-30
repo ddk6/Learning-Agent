@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.memory.store import MemoryStore
-from app.tools.base import Tool
+from app.tools.base import Tool, ToolPermission
 from app.tools.registry import ToolRegistry
 
 
@@ -50,6 +50,11 @@ def register_memory_tools(registry: ToolRegistry, memory_store: MemoryStore) -> 
                 "additionalProperties": False,
             },
             handler=save_memory,
+            permission=ToolPermission(
+                write_scope=("memories",),
+                risk_level="medium",
+                requires_confirmation=False,
+            ),
         )
     )
     registry.register(
@@ -69,5 +74,6 @@ def register_memory_tools(registry: ToolRegistry, memory_store: MemoryStore) -> 
                 "additionalProperties": False,
             },
             handler=list_memory,
+            permission=ToolPermission(read_scope=("memories",), risk_level="low"),
         )
     )

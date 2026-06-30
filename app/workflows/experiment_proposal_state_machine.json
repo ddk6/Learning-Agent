@@ -1,0 +1,50 @@
+{
+  "name": "experiment_proposal",
+  "initial_state": "need_info",
+  "states": {
+    "need_info": {
+      "description": "信息不足，等待用户补充实验目标、参数或评价指标。",
+      "events": {
+        "viewed": "need_info",
+        "revised": "need_info",
+        "cancelled": "cancelled"
+      }
+    },
+    "ready": {
+      "description": "Proposal 已生成，等待查看、应用或诊断。",
+      "events": {
+        "viewed": "ready",
+        "applied": "applied",
+        "diagnosed": "diagnosed",
+        "revised": "ready",
+        "cancelled": "cancelled"
+      }
+    },
+    "applied": {
+      "description": "Proposal 已应用到本地记录。",
+      "events": {
+        "viewed": "applied",
+        "diagnosed": "diagnosed",
+        "revised": "ready",
+        "closed": "closed"
+      }
+    },
+    "diagnosed": {
+      "description": "已基于 Proposal 生成诊断建议。",
+      "events": {
+        "viewed": "diagnosed",
+        "applied": "applied",
+        "revised": "ready",
+        "closed": "closed"
+      }
+    },
+    "cancelled": {
+      "description": "Proposal 已取消。",
+      "events": {}
+    },
+    "closed": {
+      "description": "Proposal 已关闭。",
+      "events": {}
+    }
+  }
+}

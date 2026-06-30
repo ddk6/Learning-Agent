@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from app.tools.experiment_tools import infer_metric, infer_variables
@@ -16,7 +17,14 @@ GENERIC_OBJECTIVE_WORDS = {
 }
 
 
-def create_experiment_proposal(objective: str, registry: ToolRegistry) -> dict[str, Any]:
+ToolCaller = Callable[[str, dict[str, Any]], str]
+
+
+def create_experiment_proposal(
+    objective: str,
+    registry: ToolRegistry,
+    tool_caller: ToolCaller | None = None,
+) -> dict[str, Any]:
     objective = objective.strip()
     if not objective or objective in GENERIC_OBJECTIVE_WORDS or len(objective) < 8:
         return need_info_proposal(objective, ["请说明实验目标，例如比较什么条件、优化什么结果。"])
@@ -25,7 +33,12 @@ def create_experiment_proposal(objective: str, registry: ToolRegistry) -> dict[s
     if questions:
         return need_info_proposal(objective, questions)
 
-    workflow = registry.call("plan_experiment_workflow", {"objective": objective})
+    arguments = {"objective": objective}
+    workflow = (
+        tool_caller("plan_experiment_workflow", arguments)
+        if tool_caller
+        else registry.call("plan_experiment_workflow", arguments)
+    )
     variables = infer_variables(objective) or ["用户目标中包含的实验参数"]
     metric = infer_metric(objective)
     return {

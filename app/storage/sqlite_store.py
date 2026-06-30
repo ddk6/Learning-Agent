@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.session.state import limit_text
+from app.workflows.state_machine import StateMachine
 
 
 class SQLiteAppStore:
@@ -181,11 +183,247 @@ class SQLiteAppStore:
             for row in reversed(rows)
         ]
 
+    def start_agent_run(self, session_id: str, user_input: str) -> str:
+        self.ensure_session(session_id)
+        run_id = str(uuid4())
+        current = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_runs (id, session_id, user_input, status, started_at, ended_at, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (run_id, session_id, user_input, "running", current, "", ""),
+            )
+        return run_id
+
+    def finish_agent_run(self, run_id: str, status: str, error: str = "") -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE agent_runs
+                SET status = ?, ended_at = ?, error = ?
+                WHERE id = ?
+                """,
+                (status, now_iso(), error, run_id),
+            )
+
+    def add_tool_call(
+        self,
+        run_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        result: str,
+        success: bool,
+        error: str = "",
+        duration_ms: int = 0,
+    ) -> dict[str, Any]:
+        item = {
+            "id": str(uuid4()),
+            "run_id": run_id,
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "result": result,
+            "success": success,
+            "error": error,
+            "duration_ms": duration_ms,
+            "created_at": now_iso(),
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tool_calls (
+                    id, run_id, tool_name, arguments_json, result_text,
+                    success, error, duration_ms, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item["id"],
+                    item["run_id"],
+                    item["tool_name"],
+                    json.dumps(arguments, ensure_ascii=False),
+                    result,
+                    1 if success else 0,
+                    error,
+                    duration_ms,
+                    item["created_at"],
+                ),
+            )
+        return item
+
+    def recent_agent_runs(self, limit: int = 10) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 50))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    r.id,
+                    r.session_id,
+                    r.user_input,
+                    r.status,
+                    r.started_at,
+                    r.ended_at,
+                    r.error,
+                    COUNT(c.id) AS tool_call_count,
+                    SUM(CASE WHEN c.success = 0 THEN 1 ELSE 0 END) AS failed_tool_call_count,
+                    COALESCE(SUM(c.duration_ms), 0) AS tool_duration_ms
+                FROM agent_runs r
+                LEFT JOIN tool_calls c ON c.run_id = r.id
+                GROUP BY r.id
+                ORDER BY r.rowid DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._agent_run_from_row(row) for row in rows]
+
+    def save_current_proposal(self, proposal: dict[str, Any], run_id: str = "") -> dict[str, Any]:
+        item = dict(proposal)
+        item.setdefault("id", str(uuid4()))
+        item.setdefault("created_at", now_iso())
+        item.setdefault("status", "ready")
+        item.setdefault("applied_at", "")
+        item.setdefault("apply_count", 0)
+        item["updated_at"] = now_iso()
+        with self._connect() as conn:
+            conn.execute("UPDATE proposals SET is_current = 0 WHERE is_current = 1")
+            conn.execute(
+                """
+                INSERT INTO proposals (
+                    id, run_id, status, kind, summary, objective, snapshot_json,
+                    created_at, updated_at, applied_at, apply_count, is_current
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(id) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    status = excluded.status,
+                    kind = excluded.kind,
+                    summary = excluded.summary,
+                    objective = excluded.objective,
+                    snapshot_json = excluded.snapshot_json,
+                    updated_at = excluded.updated_at,
+                    applied_at = excluded.applied_at,
+                    apply_count = excluded.apply_count,
+                    is_current = 1
+                """,
+                self._proposal_values(item, run_id),
+            )
+        return item
+
+    def current_proposal(self) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT snapshot_json
+                FROM proposals
+                WHERE is_current = 1
+                ORDER BY rowid DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        return parse_json_dict(str(row["snapshot_json"]))
+
+    def mark_current_proposal_applied(self, run_id: str = "") -> dict[str, Any]:
+        return self.update_current_proposal_status("applied", run_id=run_id, applied=True)
+
+    def update_current_proposal_status(
+        self,
+        status: str,
+        run_id: str = "",
+        applied: bool = False,
+    ) -> dict[str, Any]:
+        proposal = self.current_proposal()
+        if proposal is None:
+            raise ValueError("No current proposal.")
+        proposal = dict(proposal)
+        proposal["status"] = status
+        if applied and not proposal.get("applied_at"):
+            proposal["applied_at"] = now_iso()
+            proposal["apply_count"] = int(proposal.get("apply_count") or 0) + 1
+        proposal["updated_at"] = now_iso()
+        proposal_id = str(proposal["id"])
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE proposals
+                SET status = ?, snapshot_json = ?, updated_at = ?, applied_at = ?, apply_count = ?
+                WHERE id = ?
+                """,
+                (
+                    proposal["status"],
+                    json.dumps(proposal, ensure_ascii=False),
+                    proposal["updated_at"],
+                    proposal["applied_at"],
+                    proposal["apply_count"],
+                    proposal_id,
+                ),
+            )
+        return proposal
+
+    def add_proposal_event(
+        self,
+        proposal_id: str,
+        event_type: str,
+        event: dict[str, Any] | None = None,
+        run_id: str = "",
+    ) -> dict[str, Any]:
+        item = {
+            "id": str(uuid4()),
+            "proposal_id": proposal_id,
+            "run_id": run_id,
+            "event_type": event_type,
+            "event": event or {},
+            "created_at": now_iso(),
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO proposal_events (id, proposal_id, run_id, event_type, event_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item["id"],
+                    item["proposal_id"],
+                    item["run_id"],
+                    item["event_type"],
+                    json.dumps(item["event"], ensure_ascii=False),
+                    item["created_at"],
+                ),
+            )
+        return item
+
+    def import_proposals_from_json(self, path: Path) -> int:
+        if not path.exists() or self._proposal_count() > 0:
+            return 0
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return 0
+        if not isinstance(data, dict):
+            return 0
+
+        imported = 0
+        history = data.get("history")
+        if isinstance(history, list):
+            for proposal in history:
+                if isinstance(proposal, dict):
+                    self._insert_legacy_proposal(proposal, is_current=False)
+                    imported += 1
+
+        current = data.get("current")
+        if isinstance(current, dict):
+            self._insert_legacy_proposal(current, is_current=True)
+            imported += 1
+        return imported
+
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(
                 """
-                PRAGMA journal_mode = WAL;
+                PRAGMA journal_mode = DELETE;
 
                 CREATE TABLE IF NOT EXISTS memories (
                     id TEXT PRIMARY KEY,
@@ -218,10 +456,67 @@ class SQLiteAppStore:
                     FOREIGN KEY (session_id) REFERENCES sessions(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS agent_runs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    user_input TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    error TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS tool_calls (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    arguments_json TEXT NOT NULL,
+                    result_text TEXT NOT NULL,
+                    success INTEGER NOT NULL,
+                    error TEXT NOT NULL,
+                    duration_ms INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES agent_runs(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS proposals (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    objective TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    applied_at TEXT NOT NULL,
+                    apply_count INTEGER NOT NULL,
+                    is_current INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS proposal_events (
+                    id TEXT PRIMARY KEY,
+                    proposal_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (proposal_id) REFERENCES proposals(id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_messages_session_rowid
                     ON messages(session_id);
                 CREATE INDEX IF NOT EXISTS idx_tool_results_session_rowid
                     ON tool_results(session_id);
+                CREATE INDEX IF NOT EXISTS idx_agent_runs_session_rowid
+                    ON agent_runs(session_id);
+                CREATE INDEX IF NOT EXISTS idx_tool_calls_run_id
+                    ON tool_calls(run_id);
+                CREATE INDEX IF NOT EXISTS idx_proposals_current
+                    ON proposals(is_current);
+                CREATE INDEX IF NOT EXISTS idx_proposal_events_proposal_id
+                    ON proposal_events(proposal_id);
                 """
             )
 
@@ -248,6 +543,62 @@ class SQLiteAppStore:
             "tags": [str(tag) for tag in tags if str(tag).strip()] or ["general"],
             "created_at": str(row["created_at"]),
         }
+
+    def _agent_run_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "session_id": str(row["session_id"]),
+            "user_input": str(row["user_input"]),
+            "status": str(row["status"]),
+            "started_at": str(row["started_at"]),
+            "ended_at": str(row["ended_at"]),
+            "error": str(row["error"]),
+            "tool_call_count": int(row["tool_call_count"] or 0),
+            "failed_tool_call_count": int(row["failed_tool_call_count"] or 0),
+            "tool_duration_ms": int(row["tool_duration_ms"] or 0),
+        }
+
+    def _proposal_values(self, item: dict[str, Any], run_id: str) -> tuple[Any, ...]:
+        return (
+            str(item["id"]),
+            run_id,
+            str(item.get("status") or ""),
+            str(item.get("kind") or ""),
+            str(item.get("summary") or ""),
+            str(item.get("objective") or ""),
+            json.dumps(item, ensure_ascii=False),
+            str(item.get("created_at") or now_iso()),
+            str(item.get("updated_at") or now_iso()),
+            str(item.get("applied_at") or ""),
+            int(item.get("apply_count") or 0),
+        )
+
+    def _proposal_count(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS count FROM proposals").fetchone()
+        return int(row["count"])
+
+    def _insert_legacy_proposal(self, proposal: dict[str, Any], is_current: bool) -> None:
+        item = dict(proposal)
+        item.setdefault("id", str(uuid4()))
+        item.setdefault("created_at", now_iso())
+        item.setdefault("updated_at", now_iso())
+        item.setdefault("applied_at", "")
+        item.setdefault("apply_count", 0)
+        with self._connect() as conn:
+            if is_current:
+                conn.execute("UPDATE proposals SET is_current = 0 WHERE is_current = 1")
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO proposals (
+                    id, run_id, status, kind, summary, objective, snapshot_json,
+                    created_at, updated_at, applied_at, apply_count, is_current
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (*self._proposal_values(item, ""), 1 if is_current else 0),
+            )
+        self.add_proposal_event(str(item["id"]), "imported", {"source": "json"})
 
 
 class SQLiteMemoryStore:
@@ -327,6 +678,83 @@ class SQLiteSessionState:
         return "\n".join(lines)
 
 
+class SQLiteProposalStore:
+    def __init__(self, store: SQLiteAppStore, state_machine: StateMachine | None = None) -> None:
+        self.store = store
+        self.state_machine = state_machine
+        self.current_run_id = ""
+
+    def set_current_run(self, run_id: str) -> None:
+        self.current_run_id = run_id
+
+    def save_current(self, proposal: dict[str, Any]) -> dict[str, Any]:
+        item = self.store.save_current_proposal(proposal, run_id=self.current_run_id)
+        self.store.add_proposal_event(
+            str(item["id"]),
+            "created",
+            {
+                "from_state": "",
+                "event_type": "created",
+                "to_state": str(item.get("status") or ""),
+            },
+            run_id=self.current_run_id,
+        )
+        return item
+
+    def current(self) -> dict[str, Any] | None:
+        return self.store.current_proposal()
+
+    def mark_applied(self) -> dict[str, Any]:
+        return self.transition("applied", applied=True)
+
+    def record_event(self, event_type: str, event: dict[str, Any] | None = None) -> None:
+        self.transition(event_type, event=event or {})
+
+    def transition(
+        self,
+        event_type: str,
+        event: dict[str, Any] | None = None,
+        applied: bool = False,
+    ) -> dict[str, Any]:
+        proposal = self.current()
+        if proposal is None:
+            raise ValueError("No current proposal.")
+        from_state = str(proposal.get("status") or "")
+        if self.state_machine:
+            transition = self.state_machine.transition(from_state, event_type)
+            to_state = transition.to_state
+        else:
+            to_state = from_state
+
+        updated = proposal
+        if to_state != from_state or applied:
+            updated = self.store.update_current_proposal_status(
+                to_state,
+                run_id=self.current_run_id,
+                applied=applied,
+            )
+
+        event_payload = dict(event or {})
+        event_payload.update(
+            {
+                "from_state": from_state,
+                "event_type": event_type,
+                "to_state": to_state,
+            }
+        )
+        self.store.add_proposal_event(
+            str(proposal.get("id") or ""),
+            event_type,
+            event_payload,
+            run_id=self.current_run_id,
+        )
+        return updated
+
+
+def measure_ms(start: float) -> int:
+    return max(0, int((time.perf_counter() - start) * 1000))
+
+
 def normalize_memory_item(item: Any) -> dict[str, Any] | None:
     if not isinstance(item, dict):
         return None
@@ -346,6 +774,16 @@ def normalize_memory_item(item: Any) -> dict[str, Any] | None:
         "tags": tags or ["general"],
         "created_at": str(item.get("created_at") or now_iso()),
     }
+
+
+def parse_json_dict(raw: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, dict):
+        return data
+    return None
 
 
 def now_iso() -> str:

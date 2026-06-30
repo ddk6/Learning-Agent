@@ -38,3 +38,9 @@ class ToolRegistry:
             (name, tool.description)
             for name, tool in sorted(self._tools.items())
         ]
+
+    def permission_summaries(self) -> list[tuple[str, str, str]]:
+        return [
+            (name, tool.description, tool.permission_summary())
+            for name, tool in sorted(self._tools.items())
+        ]

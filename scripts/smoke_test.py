@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
+import gc
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from zipfile import ZipFile
@@ -13,11 +16,45 @@ from app.main import build_agent  # noqa: E402
 from app.tools.experiment_tools import register_experiment_tools  # noqa: E402
 from app.tools.note_tools import register_note_tools  # noqa: E402
 from app.tools.registry import ToolRegistry  # noqa: E402
+from app.workflows.state_machine import StateMachine, StateMachineError  # noqa: E402
 
 
 def assert_contains(text: str, expected: str) -> None:
     if expected not in text:
         raise AssertionError(f"Expected {expected!r} in output:\n{text}")
+
+
+def assert_table_count_at_least(database_file: Path, table: str, minimum: int) -> None:
+    with sqlite3.connect(database_file) as conn:
+        row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+    count = int(row[0])
+    if count < minimum:
+        raise AssertionError(f"Expected {table} to contain at least {minimum} rows, got {count}.")
+
+
+def assert_event_exists(database_file: Path, event_type: str) -> None:
+    with sqlite3.connect(database_file) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM proposal_events WHERE event_type = ?",
+            (event_type,),
+        ).fetchone()
+    if int(row[0]) < 1:
+        raise AssertionError(f"Expected proposal event {event_type!r} to exist.")
+
+
+def assert_event_transition(database_file: Path, event_type: str, from_state: str, to_state: str) -> None:
+    with sqlite3.connect(database_file) as conn:
+        rows = conn.execute(
+            "SELECT event_json FROM proposal_events WHERE event_type = ?",
+            (event_type,),
+        ).fetchall()
+    for (raw_event,) in rows:
+        event = json.loads(raw_event)
+        if event.get("from_state") == from_state and event.get("to_state") == to_state:
+            return
+    raise AssertionError(
+        f"Expected proposal event {event_type!r} transition {from_state!r}->{to_state!r}."
+    )
 
 
 def write_docx(path: Path, text: str) -> None:
@@ -157,9 +194,24 @@ def main() -> None:
         assert_contains(agent.run("/apply-proposal"), "已应用过")
         assert_contains(agent.run("/diagnose 端口连接超时"), "诊断建议")
         assert_contains(agent.run("/memory"), "已应用实验工作流 Proposal")
+        assert_table_count_at_least(database_file, "agent_runs", 1)
+        assert_table_count_at_least(database_file, "tool_calls", 1)
+        assert_table_count_at_least(database_file, "proposals", 1)
+        assert_table_count_at_least(database_file, "proposal_events", 1)
+        assert_event_exists(database_file, "created")
+        assert_event_exists(database_file, "viewed")
+        assert_event_exists(database_file, "applied")
+        assert_event_exists(database_file, "diagnosed")
+        assert_event_transition(database_file, "viewed", "ready", "ready")
+        assert_event_transition(database_file, "applied", "ready", "applied")
+        assert_event_transition(database_file, "diagnosed", "applied", "diagnosed")
+        del restarted_agent
+        del agent
+        gc.collect()
 
     test_note_file_types()
     test_experiment_tool()
+    test_state_machine_config()
 
     print("Smoke test passed.")
 
@@ -178,6 +230,20 @@ def test_experiment_tool() -> None:
     assert_contains(result, "Pilot")
     assert_contains(result, "40 C, 50 C, 60 C")
     assert_contains(result, "只生成计划，不控制真实设备")
+
+
+def test_state_machine_config() -> None:
+    state_machine = StateMachine.from_file(
+        PROJECT_ROOT / "app" / "workflows" / "experiment_proposal_state_machine.json"
+    )
+    transition = state_machine.transition("ready", "applied")
+    if transition.to_state != "applied":
+        raise AssertionError(f"Unexpected transition target: {transition}")
+    try:
+        state_machine.transition("applied", "applied")
+    except StateMachineError:
+        return
+    raise AssertionError("Expected repeated applied event from applied state to be rejected.")
 
 
 if __name__ == "__main__":

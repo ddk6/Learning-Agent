@@ -3,14 +3,20 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+#这是核心入口
 from app.agents.simple_agent import SimpleAgent
 from app.config import load_config
-from app.proposals.store import ProposalStore
-from app.storage.sqlite_store import SQLiteAppStore, SQLiteMemoryStore, SQLiteSessionState
+from app.storage.sqlite_store import (
+    SQLiteAppStore,
+    SQLiteMemoryStore,
+    SQLiteProposalStore,
+    SQLiteSessionState,
+)
 from app.tools.experiment_tools import register_experiment_tools
 from app.tools.memory_tools import register_memory_tools
 from app.tools.note_tools import register_note_tools
 from app.tools.registry import ToolRegistry
+from app.workflows.state_machine import StateMachine
 
 
 WELCOME = """Learning Agent 已启动。
@@ -31,11 +37,13 @@ def build_agent(
     registry = ToolRegistry()
     sqlite_store = SQLiteAppStore(database_file or config.database_file)
     sqlite_store.import_memories_from_json(memory_file or config.memory_file)
+    sqlite_store.import_proposals_from_json(proposal_file or config.proposal_file)
     memory_store = SQLiteMemoryStore(sqlite_store)
     session_state = SQLiteSessionState(sqlite_store, session_id=session_id)
-    if proposal_file is None and memory_file is not None:
-        proposal_file = memory_file.with_name("proposals.json")
-    proposal_store = ProposalStore(proposal_file or config.proposal_file)
+    state_machine = StateMachine.from_file(
+        config.project_root / "app" / "workflows" / "experiment_proposal_state_machine.json"
+    )
+    proposal_store = SQLiteProposalStore(sqlite_store, state_machine=state_machine)
     register_memory_tools(registry, memory_store)
     register_note_tools(registry, config.notes_dir)
     register_experiment_tools(registry)
@@ -45,6 +53,7 @@ def build_agent(
         memory_store=memory_store,
         proposal_store=proposal_store,
         session_state=session_state,
+        runtime_store=sqlite_store,
     )
 
 

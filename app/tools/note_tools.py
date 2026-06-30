@@ -8,7 +8,7 @@ from typing import Any
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
-from app.tools.base import Tool
+from app.tools.base import Tool, ToolPermission
 from app.tools.registry import ToolRegistry
 
 
@@ -106,6 +106,7 @@ def register_note_tools(registry: ToolRegistry, notes_dir: Path) -> None:
             description="列出 notes 目录下可读取的学习资料，支持 Markdown、TXT、PDF 和 DOCX。",
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
             handler=list_notes,
+            permission=ToolPermission(read_scope=("notes/",), risk_level="low"),
         )
     )
     registry.register(
@@ -130,6 +131,7 @@ def register_note_tools(registry: ToolRegistry, notes_dir: Path) -> None:
                 "additionalProperties": False,
             },
             handler=read_note,
+            permission=ToolPermission(read_scope=("notes/",), risk_level="low"),
         )
     )
     registry.register(
@@ -152,6 +154,7 @@ def register_note_tools(registry: ToolRegistry, notes_dir: Path) -> None:
                 "additionalProperties": False,
             },
             handler=search_notes,
+            permission=ToolPermission(read_scope=("notes/",), risk_level="low"),
         )
     )
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.tools.base import Tool
+from app.tools.base import Tool, ToolPermission
 from app.tools.registry import ToolRegistry
 
 
@@ -66,6 +66,12 @@ def register_experiment_tools(registry: ToolRegistry) -> None:
                 "additionalProperties": False,
             },
             handler=plan_experiment_workflow,
+            permission=ToolPermission(
+                read_scope=("user_input",),
+                write_scope=("proposal_draft",),
+                risk_level="medium",
+                requires_confirmation=True,
+            ),
         )
     )
 

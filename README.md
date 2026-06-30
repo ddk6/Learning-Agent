@@ -21,7 +21,7 @@
 - 生成实验自动化工作流 Agent 草案，用于把实习方向转成可运行原型
 - 支持实验工作流 Proposal 状态机：`need_info` / `ready` / `applied`
 - 支持基于当前 Proposal 的本地诊断建议
-- 使用 SQLite 持久化长期记忆与会话消息
+- 使用 SQLite 持久化长期记忆、会话消息、Agent Run、工具调用、Proposal 与事件
 - 支持短期会话记忆，可复用上一轮回答
 - 使用隔离临时 SQLite 数据库运行 smoke test，避免污染真实学习记忆
 
@@ -40,12 +40,16 @@ app/
   memory/
     store.py              # 本地记忆存储
   proposals/
-    store.py              # Proposal 状态存储
+    store.py              # 旧版 JSON Proposal 存储，保留用于兼容
     experiment.py         # 实验工作流 Proposal 生成与诊断
   session/
     state.py              # 当前 CLI 会话的短期上下文
   storage/
-    sqlite_store.py       # SQLite 记忆与会话存储
+    sqlite_store.py       # SQLite 状态、运行日志与 Proposal 存储
+  workflows/
+    state_machine.py      # 可配置状态机加载与校验
+    experiment_proposal_state_machine.json
+                            # 实验 Proposal 状态机配置
   tools/
     base.py               # 工具定义
     registry.py           # 工具注册器
@@ -55,7 +59,7 @@ app/
 notes/
   agent.md                # 入门笔记示例
 data/
-  .gitkeep                # 运行时生成 learning_agent.db / proposals.json
+  .gitkeep                # 运行时生成 learning_agent.db
 ```
 
 ## 学习资料支持范围
@@ -75,7 +79,7 @@ Word 目前支持 `.docx`，不支持旧版二进制 `.doc`。
 
 ## 本地状态存储
 
-当前默认用 `data/learning_agent.db` 保存长期记忆与会话消息。
+当前默认用 `data/learning_agent.db` 保存长期记忆、会话消息、Agent Run、工具调用、Proposal 与 Proposal 事件。
 
 SQLite 当前包含这些表：
 
@@ -84,9 +88,24 @@ memories      长期学习记忆
 sessions      CLI 会话
 messages      会话消息
 tool_results  最近工具结果摘要
+agent_runs    每次 Agent 处理用户输入的运行记录
+tool_calls    正式工具调用日志
+proposals     Proposal 当前快照与历史状态
+proposal_events Proposal 状态变化事件
 ```
 
-如果本地已有旧版 `data/memory.json`，启动时会在数据库为空的情况下做一次非破坏性导入；不会删除旧 JSON 文件。Proposal 暂时仍保存在 `data/proposals.json`，后续可迁移到 SQLite。
+如果本地已有旧版 `data/memory.json` 或 `data/proposals.json`，启动时会在对应 SQLite 表为空的情况下做一次非破坏性导入；不会删除旧 JSON 文件。
+
+Proposal 状态转换由 `app/workflows/experiment_proposal_state_machine.json` 配置驱动。当前核心流转包括：
+
+```text
+ready + viewed -> ready
+ready + applied -> applied
+applied + diagnosed -> diagnosed
+diagnosed + revised -> ready
+```
+
+非法转换会被拒绝，并返回明确错误。
 
 ## 快速开始
 
@@ -176,6 +195,7 @@ Agent 会把 `search_notes`、`read_note`、`save_memory`、`list_memory` 这些
 - `need_info`：信息不足，追问关键参数
 - `ready`：信息足够，生成可查看详情的 Proposal
 - `applied`：人工确认后应用到本地记录，防止重复应用
+- `diagnosed`：基于当前 Proposal 生成诊断建议
 - 实验目标与成熟度标注
 - 参数表
 - 推荐步骤
@@ -202,10 +222,10 @@ python -m app.main "/diagnose 端口连接超时"
 2. 阅读 `app/agents/simple_agent.py`，理解 Agent 主循环
 3. 给 `notes/` 添加自己的学习笔记
 4. 接入大模型，观察工具调用过程
-5. 加入 SQLite，把 `data/memory.json` 升级为数据库
+5. 加入 SQLite，把记忆、会话、运行日志和 Proposal 升级为数据库
 6. 加入 embedding 与向量检索，升级成 RAG 学习助手
 7. 加入 FastAPI 和前端页面
-8. 加入日志、评测、trace 和多 Agent
+8. 加入评测、trace 和多 Agent
 
 ## 设计原则
 
