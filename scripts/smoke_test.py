@@ -34,6 +34,12 @@ def assert_table_count_at_least(database_file: Path, table: str, minimum: int) -
         raise AssertionError(f"Expected {table} to contain at least {minimum} rows, got {count}.")
 
 
+def table_count(database_file: Path, table: str) -> int:
+    with sqlite3.connect(database_file) as conn:
+        row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+    return int(row[0])
+
+
 def assert_event_exists(database_file: Path, event_type: str) -> None:
     with sqlite3.connect(database_file) as conn:
         row = conn.execute(
@@ -203,6 +209,13 @@ def main() -> None:
         assert_contains(agent.run("/search Agent 主循环"), "agent.md")
         assert_contains(agent.run("/remember smoke test memory"), "smoke test memory")
         assert_contains(agent.run("/memory"), "smoke test memory")
+        before_false_positive = table_count(database_file, "memories")
+        false_positive_result = agent.run("这些笔记都是我不断优化的历史记录")
+        if "已保存上一轮回答到长期记忆" in false_positive_result:
+            raise AssertionError("Descriptive history-record text should not trigger save-last.")
+        after_false_positive = table_count(database_file, "memories")
+        if after_false_positive != before_false_positive:
+            raise AssertionError("False positive save-last request wrote a memory row.")
         need_info = agent.run("/experiment 帮我做实验")
         assert_contains(need_info, "Proposal 状态：need_info")
         assert_contains(need_info, "需要补充")
@@ -223,6 +236,10 @@ def main() -> None:
         runs = agent.run("/runs")
         assert_contains(runs, "最近 Agent Run 日志")
         assert_contains(runs, "tools=")
+        trace = agent.run("/runs --detail")
+        assert_contains(trace, "Agent Trace")
+        assert_contains(trace, "Run ID")
+        assert_contains(agent.run("/trace latest"), "Agent Trace")
         assert_table_count_at_least(database_file, "agent_runs", 1)
         assert_table_count_at_least(database_file, "tool_calls", 1)
         assert_tool_call_audit(database_file, "plan_experiment_workflow", "proposal_flow")
@@ -259,6 +276,8 @@ def test_experiment_tool() -> None:
             "objective": "比较 40/50/60 摄氏度下的反应效率",
             "constraints": ["只生成计划，不控制真实设备"],
         },
+        confirmed=True,
+        caller="test",
     )
     assert_contains(result, "Pilot")
     assert_contains(result, "40 C, 50 C, 60 C")

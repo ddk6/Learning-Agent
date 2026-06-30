@@ -91,7 +91,11 @@ class SimpleAgent:
         if command == "/session":
             return self.session.summary()
         if command == "/runs":
+            if rest == "--detail":
+                return self._run_trace_text("latest", current_run_id=run_id)
             return self._recent_runs_text()
+        if command == "/trace":
+            return self._run_trace_text(rest or "latest", current_run_id=run_id)
         if command == "/save-last":
             return self._save_last_answer()
         if command == "/tools":
@@ -152,7 +156,7 @@ class SimpleAgent:
 
     def _should_record_session_turn(self, user_input: str) -> bool:
         command = user_input.partition(" ")[0]
-        return command not in {"/session", "/runs", "/save-last", "/exit"}
+        return command not in {"/session", "/runs", "/trace", "/save-last", "/exit"}
 
     def _is_tool_inventory_question(self, user_input: str) -> bool:
         normalized = user_input.lower()
@@ -170,6 +174,49 @@ class SimpleAgent:
             lines.append(f"   权限边界：{permission}")
         lines.append("")
         lines.append("说明：这里列出的只是真正传给本项目 LLM Tool Calling 的工具，不包括 Codex 外层开发工具。")
+        return "\n".join(lines)
+
+    def _run_trace_text(self, run_id: str = "latest", *, current_run_id: str = "") -> str:
+        if not self.runtime_store or not hasattr(self.runtime_store, "agent_run_trace"):
+            return "当前运行环境没有可读取的 Agent Trace。"
+        trace = self.runtime_store.agent_run_trace(run_id, exclude_run_id=current_run_id)
+        if trace is None:
+            return f"没有找到 Agent Run：{run_id or 'latest'}"
+
+        run = trace["run"]
+        tool_calls = trace["tool_calls"]
+        lines = [
+            "# Agent Trace",
+            "",
+            f"- Run ID：{run['id']}",
+            f"- Session：{run['session_id']}",
+            f"- 状态：{run['status']}",
+            f"- 开始：{run['started_at']}",
+            f"- 结束：{run['ended_at'] or 'running'}",
+            f"- 用户输入：{run['user_input']}",
+            f"- 工具调用数：{len(tool_calls)}",
+        ]
+        if run.get("error"):
+            lines.append(f"- Run 错误：{limit_trace_text(run['error'], 240)}")
+
+        if not tool_calls:
+            lines.append("")
+            lines.append("本次运行没有工具调用。")
+            return "\n".join(lines)
+
+        lines.append("")
+        lines.append("## 工具调用")
+        for index, call in enumerate(tool_calls, start=1):
+            status = "success" if call["success"] else "failed"
+            arguments = json.dumps(call["arguments"], ensure_ascii=False, sort_keys=True)
+            lines.append(
+                f"{index}. `{call['tool_name']}` | {status} | "
+                f"{call['duration_ms']}ms | {call['created_at']}"
+            )
+            lines.append(f"   args: {limit_trace_text(arguments, 400)}")
+            if call.get("error"):
+                lines.append(f"   error: {limit_trace_text(call['error'], 300)}")
+            lines.append(f"   result: {limit_trace_text(call['result'], 500)}")
         return "\n".join(lines)
 
     def _recent_runs_text(self) -> str:
@@ -197,12 +244,38 @@ class SimpleAgent:
 
     def _is_save_last_answer_request(self, user_input: str) -> bool:
         normalized = user_input.lower()
-        save_words = ("保存", "记住", "记录", "存一下", "save")
-        reference_words = ("刚才", "上面", "上一轮", "这三个", "这些", "它", "last")
+        save_phrases = (
+            "保存",
+            "记住",
+            "存一下",
+            "存起来",
+            "记录一下",
+            "记录下来",
+            "帮我记录",
+            "save",
+        )
+        reference_phrases = (
+            "刚才",
+            "上面",
+            "上一轮",
+            "上轮",
+            "这三个",
+            "这些内容",
+            "这些要点",
+            "这些结论",
+            "这个结果",
+            "这个回答",
+            "这段回答",
+            "这条回答",
+            "它",
+            "last",
+        )
         transform_words = ("改写", "重写", "整理成", "总结成", "一句话")
+        noun_record_phrases = ("历史记录", "运行记录", "日志记录", "记录表")
         return (
-            any(word in normalized for word in save_words)
-            and any(word in normalized for word in reference_words)
+            not any(word in normalized for word in noun_record_phrases)
+            and any(word in normalized for word in save_phrases)
+            and any(word in normalized for word in reference_phrases)
             and not any(word in normalized for word in transform_words)
         )
 
@@ -407,6 +480,8 @@ class SimpleAgent:
         return """本地演示命令：
 /session                       查看当前会话短期上下文
 /runs                          查看最近 Agent Run 与工具调用日志
+/runs --detail                 查看最近一次 Agent Run 的 trace 明细
+/trace <run_id>                查看指定或最近一次 Agent Run 的 trace
 /save-last                     保存上一轮 Agent 回答到长期记忆
 /tools                         查看当前项目注册的工具
 /notes                         列出 notes/ 下的笔记
@@ -424,3 +499,10 @@ class SimpleAgent:
 
 配置大模型后，也可以直接输入自然语言，例如：
 帮我搜索笔记里关于 Agent 主循环的内容，并总结成 3 点。"""
+
+
+def limit_trace_text(value: str, limit: int) -> str:
+    value = " ".join(str(value).split())
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 3)] + "..."

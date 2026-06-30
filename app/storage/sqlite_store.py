@@ -278,6 +278,55 @@ class SQLiteAppStore:
             ).fetchall()
         return [self._agent_run_from_row(row) for row in rows]
 
+    def agent_run_trace(
+        self,
+        run_id: str = "latest",
+        *,
+        exclude_run_id: str = "",
+    ) -> dict[str, Any] | None:
+        run_id = run_id.strip() or "latest"
+        with self._connect() as conn:
+            if run_id == "latest":
+                run_row = conn.execute(
+                    """
+                    SELECT id, session_id, user_input, status, started_at, ended_at, error
+                    FROM agent_runs
+                    WHERE id != ?
+                    ORDER BY rowid DESC
+                    LIMIT 1
+                    """,
+                    (exclude_run_id,),
+                ).fetchone()
+            else:
+                run_row = conn.execute(
+                    """
+                    SELECT id, session_id, user_input, status, started_at, ended_at, error
+                    FROM agent_runs
+                    WHERE id = ?
+                    LIMIT 1
+                    """,
+                    (run_id,),
+                ).fetchone()
+            if run_row is None:
+                return None
+
+            tool_rows = conn.execute(
+                """
+                SELECT
+                    id, tool_name, arguments_json, result_text, success,
+                    error, duration_ms, created_at
+                FROM tool_calls
+                WHERE run_id = ?
+                ORDER BY rowid ASC
+                """,
+                (str(run_row["id"]),),
+            ).fetchall()
+
+        return {
+            "run": self._agent_run_detail_from_row(run_row),
+            "tool_calls": [self._tool_call_from_row(row) for row in tool_rows],
+        }
+
     def save_current_proposal(self, proposal: dict[str, Any], run_id: str = "") -> dict[str, Any]:
         item = dict(proposal)
         item.setdefault("id", str(uuid4()))
@@ -556,6 +605,35 @@ class SQLiteAppStore:
             "tool_call_count": int(row["tool_call_count"] or 0),
             "failed_tool_call_count": int(row["failed_tool_call_count"] or 0),
             "tool_duration_ms": int(row["tool_duration_ms"] or 0),
+        }
+
+    def _agent_run_detail_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "session_id": str(row["session_id"]),
+            "user_input": str(row["user_input"]),
+            "status": str(row["status"]),
+            "started_at": str(row["started_at"]),
+            "ended_at": str(row["ended_at"]),
+            "error": str(row["error"]),
+        }
+
+    def _tool_call_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            arguments = json.loads(str(row["arguments_json"]))
+        except json.JSONDecodeError:
+            arguments = {"_raw": str(row["arguments_json"])}
+        if not isinstance(arguments, dict):
+            arguments = {"_raw": arguments}
+        return {
+            "id": str(row["id"]),
+            "tool_name": str(row["tool_name"]),
+            "arguments": arguments,
+            "result": str(row["result_text"]),
+            "success": bool(row["success"]),
+            "error": str(row["error"]),
+            "duration_ms": int(row["duration_ms"] or 0),
+            "created_at": str(row["created_at"]),
         }
 
     def _proposal_values(self, item: dict[str, Any], run_id: str) -> tuple[Any, ...]:
