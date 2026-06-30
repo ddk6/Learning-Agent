@@ -15,7 +15,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from app.main import build_agent  # noqa: E402
 from app.tools.experiment_tools import register_experiment_tools  # noqa: E402
 from app.tools.note_tools import register_note_tools  # noqa: E402
-from app.tools.registry import ToolRegistry  # noqa: E402
+from app.tools.memory_tools import register_memory_tools  # noqa: E402
+from app.tools.registry import ToolPolicyError, ToolRegistry  # noqa: E402
+from app.storage.sqlite_store import SQLiteAppStore, SQLiteMemoryStore  # noqa: E402
 from app.workflows.state_machine import StateMachine, StateMachineError  # noqa: E402
 
 
@@ -55,6 +57,28 @@ def assert_event_transition(database_file: Path, event_type: str, from_state: st
     raise AssertionError(
         f"Expected proposal event {event_type!r} transition {from_state!r}->{to_state!r}."
     )
+
+
+def assert_tool_call_audit(database_file: Path, tool_name: str, expected: str) -> None:
+    with sqlite3.connect(database_file) as conn:
+        rows = conn.execute(
+            "SELECT arguments_json FROM tool_calls WHERE tool_name = ? ORDER BY rowid DESC",
+            (tool_name,),
+        ).fetchall()
+    for (raw_arguments,) in rows:
+        if expected in raw_arguments:
+            return
+    raise AssertionError(f"Expected audit marker {expected!r} for tool {tool_name!r}.")
+
+
+def assert_raises_contains(action: callable, expected: str) -> None:
+    try:
+        action()
+    except Exception as exc:
+        if expected not in str(exc):
+            raise AssertionError(f"Expected error containing {expected!r}, got {exc!r}.") from exc
+        return
+    raise AssertionError(f"Expected error containing {expected!r}.")
 
 
 def write_docx(path: Path, text: str) -> None:
@@ -158,6 +182,8 @@ def main() -> None:
         tool_list = agent.run("/tools")
         assert_contains(tool_list, "当前本项目注册了 6 个工具")
         assert_contains(tool_list, "plan_experiment_workflow")
+        assert_contains(tool_list, "权限边界")
+        assert_contains(tool_list, "confirmation=yes")
         if "multi_tool_use.parallel" in tool_list:
             raise AssertionError(f"Unexpected outer tool in local inventory:\n{tool_list}")
         natural_tool_list = agent.run("当前有几个工具可以调用？")
@@ -194,8 +220,13 @@ def main() -> None:
         assert_contains(agent.run("/apply-proposal"), "已应用过")
         assert_contains(agent.run("/diagnose 端口连接超时"), "诊断建议")
         assert_contains(agent.run("/memory"), "已应用实验工作流 Proposal")
+        runs = agent.run("/runs")
+        assert_contains(runs, "最近 Agent Run 日志")
+        assert_contains(runs, "tools=")
         assert_table_count_at_least(database_file, "agent_runs", 1)
         assert_table_count_at_least(database_file, "tool_calls", 1)
+        assert_tool_call_audit(database_file, "plan_experiment_workflow", "proposal_flow")
+        assert_tool_call_audit(database_file, "read_note", "local_command")
         assert_table_count_at_least(database_file, "proposals", 1)
         assert_table_count_at_least(database_file, "proposal_events", 1)
         assert_event_exists(database_file, "created")
@@ -210,8 +241,10 @@ def main() -> None:
         gc.collect()
 
     test_note_file_types()
+    test_tool_permission_boundaries()
     test_experiment_tool()
     test_state_machine_config()
+    test_architecture_note_exists()
 
     print("Smoke test passed.")
 
@@ -232,6 +265,65 @@ def test_experiment_tool() -> None:
     assert_contains(result, "只生成计划，不控制真实设备")
 
 
+def test_tool_permission_boundaries() -> None:
+    with TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        notes_dir = temp_path / "notes"
+        notes_dir.mkdir()
+        (notes_dir / "sample.md").write_text("Agent note", encoding="utf-8")
+
+        registry = ToolRegistry()
+        register_note_tools(registry, notes_dir)
+        register_experiment_tools(registry)
+        sqlite_store = SQLiteAppStore(temp_path / "learning_agent.db")
+        register_memory_tools(registry, SQLiteMemoryStore(sqlite_store))
+
+        assert_raises_contains(
+            lambda: registry.call("read_note", {"path": "../outside.md"}),
+            "notes directory",
+        )
+        assert_raises_contains(
+            lambda: registry.call("read_note", {"path": "sample.md", "unexpected": True}),
+            "Unknown argument",
+        )
+        assert_raises_contains(
+            lambda: registry.call("list_memory", {"limit": 101}),
+            "<= 100",
+        )
+        assert_raises_contains(
+            lambda: registry.call("missing_tool", {}),
+            "Unknown tool",
+        )
+        assert_raises_contains(
+            lambda: registry.call(
+                "plan_experiment_workflow",
+                {"objective": "比较 40/50/60 摄氏度下的反应效率"},
+                caller="llm_tool_call",
+            ),
+            "requires explicit user confirmation",
+        )
+        try:
+            registry.call(
+                "plan_experiment_workflow",
+                {"objective": "比较 40/50/60 摄氏度下的反应效率"},
+                confirmed=False,
+                caller="llm_tool_call",
+            )
+        except ToolPolicyError:
+            pass
+        else:
+            raise AssertionError("Expected ToolPolicyError for unconfirmed risky tool.")
+        assert_contains(
+            registry.call(
+                "plan_experiment_workflow",
+                {"objective": "比较 40/50/60 摄氏度下的反应效率"},
+                confirmed=True,
+                caller="local_command",
+            ),
+            "实验工作流草案",
+        )
+
+
 def test_state_machine_config() -> None:
     state_machine = StateMachine.from_file(
         PROJECT_ROOT / "app" / "workflows" / "experiment_proposal_state_machine.json"
@@ -244,6 +336,17 @@ def test_state_machine_config() -> None:
     except StateMachineError:
         return
     raise AssertionError("Expected repeated applied event from applied state to be rejected.")
+
+
+def test_architecture_note_exists() -> None:
+    note = PROJECT_ROOT / "notes" / "architecture-and-adr.md"
+    if not note.exists():
+        raise AssertionError("Expected notes/architecture-and-adr.md to exist.")
+    text = note.read_text(encoding="utf-8")
+    assert_contains(text, "会话记忆")
+    assert_contains(text, "长期记忆")
+    assert_contains(text, "工具权限边界")
+    assert_contains(text, "ADR")
 
 
 if __name__ == "__main__":

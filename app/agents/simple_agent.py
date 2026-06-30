@@ -90,26 +90,46 @@ class SimpleAgent:
             return self._help_text()
         if command == "/session":
             return self.session.summary()
+        if command == "/runs":
+            return self._recent_runs_text()
         if command == "/save-last":
             return self._save_last_answer()
         if command == "/tools":
             return self._tool_inventory_text()
         if command == "/notes":
-            return self._call_tool("list_notes", {}, run_id)
+            return self._call_tool("list_notes", {}, run_id, confirmed=True, caller="local_command")
         if command == "/read":
             if not rest:
                 return "用法：/read agent.md"
-            return self._call_tool("read_note", {"path": rest}, run_id)
+            return self._call_tool(
+                "read_note",
+                {"path": rest},
+                run_id,
+                confirmed=True,
+                caller="local_command",
+            )
         if command == "/search":
             if not rest:
                 return "用法：/search Agent 主循环"
-            return self._call_tool("search_notes", {"query": rest}, run_id)
+            return self._call_tool(
+                "search_notes",
+                {"query": rest},
+                run_id,
+                confirmed=True,
+                caller="local_command",
+            )
         if command == "/remember":
             if not rest:
                 return "用法：/remember 今天理解了工具调用"
-            return self._call_tool("save_memory", {"content": rest, "tag": "learning"}, run_id)
+            return self._call_tool(
+                "save_memory",
+                {"content": rest, "tag": "learning"},
+                run_id,
+                confirmed=True,
+                caller="local_command",
+            )
         if command == "/memory":
-            return self._call_tool("list_memory", {}, run_id)
+            return self._call_tool("list_memory", {}, run_id, confirmed=True, caller="local_command")
         if command == "/experiment":
             if not rest:
                 return "用法：/experiment 比较 40/50/60 摄氏度下的反应效率"
@@ -132,7 +152,7 @@ class SimpleAgent:
 
     def _should_record_session_turn(self, user_input: str) -> bool:
         command = user_input.partition(" ")[0]
-        return command not in {"/session", "/save-last", "/exit"}
+        return command not in {"/session", "/runs", "/save-last", "/exit"}
 
     def _is_tool_inventory_question(self, user_input: str) -> bool:
         normalized = user_input.lower()
@@ -143,12 +163,36 @@ class SimpleAgent:
         )
 
     def _tool_inventory_text(self) -> str:
-        summaries = self.registry.summaries()
+        summaries = self.registry.permission_summaries()
         lines = [f"当前本项目注册了 {len(summaries)} 个工具："]
-        for index, (name, description) in enumerate(summaries, start=1):
+        for index, (name, description, permission) in enumerate(summaries, start=1):
             lines.append(f"{index}. `{name}`：{description}")
+            lines.append(f"   权限边界：{permission}")
         lines.append("")
         lines.append("说明：这里列出的只是真正传给本项目 LLM Tool Calling 的工具，不包括 Codex 外层开发工具。")
+        return "\n".join(lines)
+
+    def _recent_runs_text(self) -> str:
+        if not self.runtime_store or not hasattr(self.runtime_store, "recent_agent_runs"):
+            return "当前运行环境没有可读取的 Agent Run 日志。"
+        runs = self.runtime_store.recent_agent_runs(limit=10)
+        if not runs:
+            return "还没有 Agent Run 日志。"
+
+        lines = ["# 最近 Agent Run 日志", ""]
+        for run in runs:
+            user_input = str(run.get("user_input") or "")
+            error = str(run.get("error") or "")
+            lines.append(
+                "- "
+                f"{run.get('started_at')} | {run.get('status')} | "
+                f"tools={run.get('tool_call_count')} "
+                f"failed={run.get('failed_tool_call_count')} "
+                f"duration={run.get('tool_duration_ms')}ms | "
+                f"{user_input[:80]}"
+            )
+            if error:
+                lines.append(f"  error: {error[:160]}")
         return "\n".join(lines)
 
     def _is_save_last_answer_request(self, user_input: str) -> bool:
@@ -173,7 +217,13 @@ class SimpleAgent:
         proposal = create_experiment_proposal(
             objective,
             self.registry,
-            tool_caller=lambda name, arguments: self._call_tool(name, arguments, run_id),
+            tool_caller=lambda name, arguments: self._call_tool(
+                name,
+                arguments,
+                run_id,
+                confirmed=True,
+                caller="proposal_flow",
+            ),
         )
         proposal = self.proposal_store.save_current(proposal)
         return render_proposal_card(proposal)
@@ -269,7 +319,7 @@ class SimpleAgent:
         except json.JSONDecodeError:
             arguments = {}
 
-        result = self._call_tool(name, arguments, run_id)
+        result = self._call_tool(name, arguments, run_id, confirmed=False, caller="llm_tool_call")
 
         return {
             "role": "tool",
@@ -278,24 +328,51 @@ class SimpleAgent:
             "content": result,
         }
 
-    def _call_tool(self, name: str, arguments: dict[str, Any], run_id: str) -> str:
+    def _call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        run_id: str,
+        *,
+        confirmed: bool = False,
+        caller: str = "unknown",
+    ) -> str:
         started = time.perf_counter()
         success = True
         error = ""
+        policy_decision = ""
         try:
-            result = self.registry.call(name, arguments)
+            policy_decision = self.registry.policy_decision(
+                name,
+                confirmed=confirmed,
+                caller=caller,
+            )
+            result = self.registry.call(
+                name,
+                arguments,
+                confirmed=confirmed,
+                caller=caller,
+            )
         except Exception as exc:
             success = False
             error = str(exc)
+            if not policy_decision:
+                policy_decision = f"error_before_policy_decision; caller={caller}"
             result = f"工具 {name} 执行失败：{exc}"
 
         duration_ms = max(0, int((time.perf_counter() - started) * 1000))
         self.session.record_tool_result(name, result)
         if self.runtime_store and run_id:
+            audit_arguments = dict(arguments)
+            audit_arguments["_audit"] = {
+                "caller": caller,
+                "confirmed": confirmed,
+                "policy_decision": policy_decision,
+            }
             self.runtime_store.add_tool_call(
                 run_id=run_id,
                 tool_name=name,
-                arguments=arguments,
+                arguments=audit_arguments,
                 result=result,
                 success=success,
                 error=error,
@@ -329,6 +406,7 @@ class SimpleAgent:
     def _help_text(self) -> str:
         return """本地演示命令：
 /session                       查看当前会话短期上下文
+/runs                          查看最近 Agent Run 与工具调用日志
 /save-last                     保存上一轮 Agent 回答到长期记忆
 /tools                         查看当前项目注册的工具
 /notes                         列出 notes/ 下的笔记

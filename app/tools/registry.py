@@ -5,6 +5,10 @@ from typing import Any
 from app.tools.base import Tool
 
 
+class ToolPolicyError(PermissionError):
+    pass
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         # 注册器是 Agent 和工具之间的边界层。
@@ -23,9 +27,44 @@ class ToolRegistry:
             available = ", ".join(sorted(self._tools)) or "none"
             raise ValueError(f"Unknown tool: {name}. Available tools: {available}") from exc
 
-    def call(self, name: str, arguments: dict[str, Any] | None = None) -> str:
+    def call(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        confirmed: bool = False,
+        caller: str = "unknown",
+    ) -> str:
         # 所有工具调用都收敛到这里，方便以后统一加权限检查、日志、重试和耗时统计。
-        return self.get(name).run(arguments or {})
+        tool = self.get(name)
+        self._enforce_policy(tool, confirmed=confirmed, caller=caller)
+        return tool.run(arguments or {})
+
+    def policy_decision(
+        self,
+        name: str,
+        *,
+        confirmed: bool = False,
+        caller: str = "unknown",
+    ) -> str:
+        tool = self.get(name)
+        if tool.permission.requires_confirmation and not confirmed:
+            return (
+                "blocked: confirmation_required; "
+                f"caller={caller}; risk={tool.permission.risk_level}"
+            )
+        return (
+            "allowed; "
+            f"caller={caller}; risk={tool.permission.risk_level}; "
+            f"confirmed={'yes' if confirmed else 'no'}"
+        )
+
+    def _enforce_policy(self, tool: Tool, *, confirmed: bool, caller: str) -> None:
+        if tool.permission.requires_confirmation and not confirmed:
+            raise ToolPolicyError(
+                f"Tool {tool.name} requires explicit user confirmation before execution "
+                f"(caller={caller}, risk={tool.permission.risk_level})."
+            )
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [tool.to_openai_tool() for tool in self._tools.values()]

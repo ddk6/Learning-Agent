@@ -23,7 +23,10 @@
 - 支持基于当前 Proposal 的本地诊断建议
 - 使用 SQLite 持久化长期记忆、会话消息、Agent Run、工具调用、Proposal 与事件
 - 支持短期会话记忆，可复用上一轮回答
+- 支持 `/runs` 查看最近 Agent Run 与工具调用日志
+- 工具声明读写范围、风险等级和确认要求，并在调用前做最小参数校验
 - 使用隔离临时 SQLite 数据库运行 smoke test，避免污染真实学习记忆
+- 每次代码变更后，同步在 `notes/` 保存架构、流程、边界与 ADR 说明
 
 ## 目录结构
 
@@ -58,6 +61,7 @@ app/
     memory_tools.py       # 记忆工具
 notes/
   agent.md                # 入门笔记示例
+  architecture-and-adr.md # 当前架构、流程、记忆边界、工具权限和 ADR 快照
 data/
   .gitkeep                # 运行时生成 learning_agent.db
 ```
@@ -93,6 +97,14 @@ tool_calls    正式工具调用日志
 proposals     Proposal 当前快照与历史状态
 proposal_events Proposal 状态变化事件
 ```
+
+运行日志可以通过 CLI 查看：
+
+```powershell
+python -m app.main "/runs"
+```
+
+`/runs` 会展示最近 Agent Run 的状态、工具调用数量、失败数量和工具耗时摘要。更完整的结构化数据仍保存在 SQLite，后续可扩展成 trace 视图。
 
 如果本地已有旧版 `data/memory.json` 或 `data/proposals.json`，启动时会在对应 SQLite 表为空的情况下做一次非破坏性导入；不会删除旧 JSON 文件。
 
@@ -132,6 +144,7 @@ python scripts/smoke_test.py
 ```text
 /help
 /session
+/runs
 /save-last
 /tools
 /notes
@@ -148,6 +161,19 @@ python scripts/smoke_test.py
 ```
 
 会话消息现在会持久化到 SQLite。它用于支持“保存刚才的内容”“这三个要点”“上一轮回答”等指代；需要长期保留时使用 `/save-last` 或自然语言保存请求，内容会写入 `memories` 表。
+
+记忆边界：
+
+- 会话记忆：自动记录最近对话和工具结果，服务于当前会话上下文。
+- 长期记忆：只保存用户明确要求或对项目长期有价值的信息。
+- 工具结果：只保存摘要，避免大文件内容污染上下文。
+
+工具权限边界：
+
+- 模型只能调用 `ToolRegistry` 注册的项目工具，不能直接访问文件系统。
+- 笔记工具只允许访问 `notes/` 内的受支持文件类型。
+- 工具 schema 禁止未知参数，并校验基础类型与范围。
+- 实验 Proposal 当前只写本地记录，不控制真实设备或外部系统。
 
 ## 接入大模型
 
