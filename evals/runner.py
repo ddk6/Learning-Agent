@@ -216,6 +216,9 @@ def build_eval_agent(database_file: Path) -> SimpleAgent:
         openai_model="",
         openai_base_url="https://api.openai.com/v1",
         temperature=0.0,
+        web_search_provider="auto",
+        tavily_api_key="",
+        brave_search_api_key="",
     )
 
     registry = ToolRegistry()

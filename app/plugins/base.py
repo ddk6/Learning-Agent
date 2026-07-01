@@ -28,7 +28,8 @@ def register_default_plugins(registry: ToolRegistry, context: PluginContext) -> 
     # Import inside the function to keep plugin modules independent and cheap to load.
     from app.plugins.memory_plugin import MemoryPlugin
     from app.plugins.notes_plugin import NotesPlugin
+    from app.plugins.web_plugin import WebPlugin
     from app.plugins.workflow_plugin import WorkflowPlugin
 
-    for plugin in (MemoryPlugin(), NotesPlugin(), WorkflowPlugin()):
+    for plugin in (MemoryPlugin(), NotesPlugin(), WebPlugin(), WorkflowPlugin()):
         plugin.register(registry, context)

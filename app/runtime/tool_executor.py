@@ -7,6 +7,8 @@ from app.runtime.approval import ToolExecutionRequest, ToolExecutionResult
 from app.tools.registry import ToolRegistry
 
 
+#这是工具执行器的类 主要负责工具的执行、记录执行结果等
+#一般由agent调用 通过调用工具执行器来执行工具
 class ToolExecutor:
     """Executes registered tools and records the audit trail.
 

@@ -1,5 +1,5 @@
 {"id":"runtime-help-001","category":"runtime_command","input":"/help","expected_contains":["/trace <run_id>","兼容别名","/tools"],"risk":"low"}
-{"id":"tool-inventory-001","category":"tool_registry","input":"/tools","expected_contains":["当前本项目注册了","权限边界","confirmation=yes"],"risk":"low"}
+{"id":"tool-inventory-001","category":"tool_registry","input":"/tools","expected_contains":["当前本项目注册了","web_search","fetch_web_page","权限边界","confirmation=yes"],"risk":"low"}
 {"id":"notes-list-001","category":"knowledge_tool","input":"/notes","expected_contains":["agent.md"],"risk":"low"}
 {"id":"notes-read-001","category":"knowledge_tool","input":"/read agent.md","expected_contains":["最小 Agent 主循环"],"risk":"low"}
 {"id":"notes-search-001","category":"knowledge_tool","input":"/search Agent 主循环","expected_contains":["agent.md"],"risk":"low"}

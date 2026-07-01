@@ -22,6 +22,9 @@ class AppConfig:
     openai_model: str
     openai_base_url: str
     temperature: float
+    web_search_provider: str
+    tavily_api_key: str
+    brave_search_api_key: str
 
     @property
     def has_llm(self) -> bool:
@@ -76,4 +79,7 @@ def load_config() -> AppConfig:
         openai_model=os.environ.get("OPENAI_MODEL", "").strip(),
         openai_base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip(),
         temperature=_float_env("OPENAI_TEMPERATURE", 0.2),
+        web_search_provider=os.environ.get("WEB_SEARCH_PROVIDER", "auto").strip().lower(),
+        tavily_api_key=os.environ.get("TAVILY_API_KEY", "").strip(),
+        brave_search_api_key=os.environ.get("BRAVE_SEARCH_API_KEY", "").strip(),
     )

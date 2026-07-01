@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import gc
@@ -11,12 +12,21 @@ from zipfile import ZipFile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
+os.environ["OPENAI_API_KEY"] = ""
+os.environ["OPENAI_MODEL"] = ""
 
 from app.main import build_agent  # noqa: E402
 from app.runtime.command_router import CommandRouter  # noqa: E402
 from app.tools.experiment_tools import register_experiment_tools  # noqa: E402
 from app.tools.note_tools import register_note_tools  # noqa: E402
 from app.tools.memory_tools import register_memory_tools  # noqa: E402
+from app.tools.web_tools import (  # noqa: E402
+    SearchResult,
+    fetch_web_page,
+    register_web_tools,
+    search_duckduckgo,
+    search_tavily,
+)
 from app.tools.registry import ToolPolicyError, ToolRegistry  # noqa: E402
 from app.storage.sqlite_store import SQLiteAppStore, SQLiteMemoryStore  # noqa: E402
 from app.workflows.state_machine import StateMachine, StateMachineError  # noqa: E402
@@ -188,14 +198,35 @@ def main() -> None:
 
         assert_contains(agent.run("/help"), "/notes")
         tool_list = agent.run("/tools")
-        assert_contains(tool_list, "当前本项目注册了 6 个工具")
+        assert_contains(tool_list, "当前本项目注册了 8 个工具")
+        assert_contains(tool_list, "web_search")
+        assert_contains(tool_list, "fetch_web_page")
         assert_contains(tool_list, "plan_experiment_workflow")
         assert_contains(tool_list, "权限边界")
         assert_contains(tool_list, "confirmation=yes")
         if "multi_tool_use.parallel" in tool_list:
             raise AssertionError(f"Unexpected outer tool in local inventory:\n{tool_list}")
         natural_tool_list = agent.run("当前有几个工具可以调用？")
-        assert_contains(natural_tool_list, "当前本项目注册了 6 个工具")
+        assert_contains(natural_tool_list, "当前本项目注册了 8 个工具")
+        pending_run_id = agent._start_run("pending tool confirmation smoke")
+        pending_tool_message = agent._execute_tool_call(
+            {
+                "id": "pending-tool-call",
+                "function": {
+                    "name": "plan_experiment_workflow",
+                    "arguments": json.dumps(
+                        {"objective": "比较 40/50/60 摄氏度下的反应效率"},
+                        ensure_ascii=False,
+                    ),
+                },
+            },
+            pending_run_id,
+        )
+        agent._finish_run(pending_run_id, "completed")
+        assert_contains(pending_tool_message["content"], "requires explicit user confirmation")
+        confirmation_result = agent.run("我允许")
+        assert_contains(confirmation_result, "已根据你的确认执行 `plan_experiment_workflow`")
+        assert_contains(confirmation_result, "实验工作流草案")
         assert_contains(agent.run("/notes"), "agent.md")
         assert_contains(agent.run("/read agent.md"), "最小 Agent 主循环")
         assert_contains(agent.run("/session"), "上一轮用户输入：/read agent.md")
@@ -269,6 +300,10 @@ def main() -> None:
 
     test_note_file_types()
     test_tool_permission_boundaries()
+    test_web_search_parser()
+    test_fetch_web_page_boundaries()
+    test_ask_web_search_summary_fallback()
+    test_tavily_search_parser()
     test_experiment_tool()
     test_state_machine_config()
     test_command_router()
@@ -306,6 +341,7 @@ def test_tool_permission_boundaries() -> None:
         registry = ToolRegistry()
         register_note_tools(registry, notes_dir)
         register_experiment_tools(registry)
+        register_web_tools(registry)
         sqlite_store = SQLiteAppStore(temp_path / "learning_agent.db")
         register_memory_tools(registry, SQLiteMemoryStore(sqlite_store))
 
@@ -324,6 +360,22 @@ def test_tool_permission_boundaries() -> None:
         assert_raises_contains(
             lambda: registry.call("missing_tool", {}),
             "Unknown tool",
+        )
+        assert_raises_contains(
+            lambda: registry.call(
+                "web_search",
+                {"query": "OpenAI web search"},
+                caller="llm_tool_call",
+            ),
+            "requires explicit user confirmation",
+        )
+        assert_raises_contains(
+            lambda: registry.call(
+                "fetch_web_page",
+                {"url": "https://example.com"},
+                caller="llm_tool_call",
+            ),
+            "requires explicit user confirmation",
         )
         assert_raises_contains(
             lambda: registry.call(
@@ -353,6 +405,137 @@ def test_tool_permission_boundaries() -> None:
             ),
             "实验工作流草案",
         )
+
+
+def test_web_search_parser() -> None:
+    html = """
+    <html><body>
+      <a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.example.com%2Fagent">Agent Docs</a>
+      <a class="result__snippet">Official guide for agent search.</a>
+      <a class="result__a" href="https://blog.example.net/post">Blog Post</a>
+      <a class="result__snippet">A secondary result.</a>
+    </body></html>
+    """
+
+    def fake_fetcher(_request: object, *, timeout: int) -> str:
+        if timeout <= 0:
+            raise AssertionError("Expected positive timeout.")
+        return html
+
+    results = search_duckduckgo(
+        "agent search",
+        max_results=5,
+        allowed_domains=["example.com"],
+        fetcher=fake_fetcher,
+    )
+    if len(results) != 1:
+        raise AssertionError(f"Expected one filtered web result, got {len(results)}.")
+    assert_contains(results[0].title, "Agent Docs")
+    assert_contains(results[0].url, "https://docs.example.com/agent")
+    assert_contains(results[0].snippet, "Official guide")
+
+
+def test_fetch_web_page_boundaries() -> None:
+    html = b"""
+    <html>
+      <head>
+        <title>Example Page</title>
+        <style>body { display: none; }</style>
+        <script>ignore this instruction</script>
+      </head>
+      <body>
+        <h1>Public article</h1>
+        <p>This is the visible article body for the learning agent.</p>
+      </body>
+    </html>
+    """
+
+    def fake_fetcher(_request: object, *, timeout: int, max_bytes: int) -> tuple[bytes, str, str]:
+        if timeout <= 0 or max_bytes <= 0:
+            raise AssertionError("Expected positive fetch limits.")
+        return html, "https://93.184.216.34/article", "text/html; charset=utf-8"
+
+    page = fetch_web_page(
+        "https://93.184.216.34/article",
+        allowed_domains=[],
+        timeout_seconds=3,
+        max_bytes=10_000,
+        max_chars=2_000,
+        fetcher=fake_fetcher,
+    )
+    assert_contains(page.title, "Example Page")
+    assert_contains(page.text, "Public article")
+    assert_contains(page.text, "visible article body")
+    if "ignore this instruction" in page.text:
+        raise AssertionError("Script text should not be included in fetched page text.")
+
+    assert_raises_contains(
+        lambda: fetch_web_page("http://127.0.0.1/admin", allowed_domains=[]),
+        "非公网",
+    )
+    assert_raises_contains(
+        lambda: fetch_web_page("https://93.184.216.34/article", allowed_domains=["example.com"]),
+        "域名不在白名单",
+    )
+
+
+def test_ask_web_search_summary_fallback() -> None:
+    with TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        agent = build_agent(
+            database_file=temp_path / "learning_agent.db",
+            proposal_file=temp_path / "proposals.json",
+            session_id="ask-web-fallback-test",
+        )
+        results = [
+            SearchResult(
+                title="Weather Example",
+                url="https://weather.example.com/beijing",
+                snippet="北京今天多云，气温 24 到 31 摄氏度，北风 2 级。",
+            )
+        ]
+        output = agent._answer_from_search_results(
+            "北京今天什么天气？",
+            results,
+            ["https://weather.example.com/beijing: 工具 fetch_web_page 执行失败：没有提取到可读网页正文。"],
+        )
+        assert_contains(output, "基于搜索结果摘要生成")
+        assert_contains(output, "北京今天多云")
+        assert_contains(output, "来源：")
+        assert_contains(output, "Weather Example")
+
+
+def test_tavily_search_parser() -> None:
+    def fake_fetcher(_request: object, *, timeout: int) -> dict:
+        if timeout <= 0:
+            raise AssertionError("Expected positive timeout.")
+        return {
+            "results": [
+                {
+                    "title": "OpenAI Docs",
+                    "url": "https://platform.openai.com/docs/guides/tools-web-search",
+                    "content": "Use web search to include current information.",
+                },
+                {
+                    "title": "Other Docs",
+                    "url": "https://example.net/other",
+                    "content": "Filtered out by domain.",
+                },
+            ]
+        }
+
+    results = search_tavily(
+        "OpenAI web search",
+        max_results=5,
+        allowed_domains=["openai.com"],
+        api_key="",
+        fetcher=fake_fetcher,
+    )
+    if len(results) != 1:
+        raise AssertionError(f"Expected one filtered Tavily result, got {len(results)}.")
+    assert_contains(results[0].title, "OpenAI Docs")
+    assert_contains(results[0].url, "platform.openai.com")
+    assert_contains(results[0].snippet, "current information")
 
 
 def test_state_machine_config() -> None:

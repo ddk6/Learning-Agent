@@ -22,7 +22,8 @@ WELCOME = """Agent Runtime Lab 已启动。
 """
 # 程序入口只负责交互。
 
-
+#这是构建agent的函数
+#主要负责组装agent的各个组件
 def build_agent(
     memory_file: Path | None = None,
     proposal_file: Path | None = None,
@@ -43,6 +44,7 @@ def build_agent(
     )
     proposal_store = SQLiteProposalStore(sqlite_store, state_machine=state_machine)
     register_default_plugins(registry, PluginContext(config=config, memory_store=memory_store))
+    #返回组装好的agent 这里返回的是agent的实例 能直接调用agent里的方法
     return SimpleAgent(
         config=config,
         registry=registry,
@@ -53,11 +55,15 @@ def build_agent(
     )
 
 
+#这是程序入口
+#主要负责与用户交互
 def main() -> None:
+    #构建agent
     agent = build_agent()
-
+    #如果命令行的参数大于1，则认为用户输入了命令
     if len(sys.argv) > 1:
         user_input = " ".join(sys.argv[1:]).strip()
+        #运行agent
         if user_input:
             print(agent.run(user_input))
         return
