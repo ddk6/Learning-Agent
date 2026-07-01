@@ -1,1 +1,1 @@
-"""Learning Agent application package."""
+"""Agent Runtime Lab application package."""

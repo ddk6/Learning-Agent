@@ -19,7 +19,7 @@ from app.tools.registry import ToolRegistry
 from app.workflows.state_machine import StateMachine
 
 
-WELCOME = """Learning Agent 已启动。
+WELCOME = """Agent Runtime Lab 已启动。
 输入 /help 查看本地演示命令，输入 /exit 退出。
 """
 # 程序入口只负责交互。

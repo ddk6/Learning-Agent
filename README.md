@@ -231,7 +231,7 @@ Agent 会把 `search_notes`、`read_note`、`save_memory`、`list_memory` 这些
 帮我列出当前有哪些学习笔记
 帮我搜索笔记里关于 Agent 主循环的内容，并总结成 3 点
 保存这三个要点
-请记住：我已经完成 Learning Agent 的大模型接入
+请记住：我已经完成 Agent Runtime Lab 的大模型接入
 查看最近的学习记忆
 帮我生成一个比较 40/50/60 摄氏度下反应效率的实验工作流草案
 ```
