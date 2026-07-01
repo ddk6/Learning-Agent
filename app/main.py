@@ -6,15 +6,13 @@ from pathlib import Path
 #这是核心入口
 from app.agents.simple_agent import SimpleAgent
 from app.config import load_config
+from app.plugins import PluginContext, register_default_plugins
 from app.storage.sqlite_store import (
     SQLiteAppStore,
     SQLiteMemoryStore,
     SQLiteProposalStore,
     SQLiteSessionState,
 )
-from app.tools.experiment_tools import register_experiment_tools
-from app.tools.memory_tools import register_memory_tools
-from app.tools.note_tools import register_note_tools
 from app.tools.registry import ToolRegistry
 from app.workflows.state_machine import StateMachine
 
@@ -44,9 +42,7 @@ def build_agent(
         config.project_root / "app" / "workflows" / "experiment_proposal_state_machine.json"
     )
     proposal_store = SQLiteProposalStore(sqlite_store, state_machine=state_machine)
-    register_memory_tools(registry, memory_store)
-    register_note_tools(registry, config.notes_dir)
-    register_experiment_tools(registry)
+    register_default_plugins(registry, PluginContext(config=config, memory_store=memory_store))
     return SimpleAgent(
         config=config,
         registry=registry,

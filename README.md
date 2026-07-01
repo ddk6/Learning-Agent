@@ -37,7 +37,7 @@
 - 使用 SQLite 持久化长期记忆、会话消息、Agent Run、工具调用、Proposal 与事件
 - 支持短期会话记忆，可复用上一轮回答
 - 支持 `/runs` 查看最近 Agent Run 与工具调用日志
-- 支持 `/runs --detail` 和 `/trace <run_id>` 查看单次 Agent Run 的工具调用 trace
+- 支持 `/trace <run_id>` 查看单次 Agent Run 的工具调用 trace，`/runs --detail` 保留为兼容别名
 - 工具声明读写范围、风险等级和确认要求，并在调用前做最小参数校验
 - 提供 `evals/minimal_cases.jsonl` 作为最小离线评估用例集
 - 使用隔离临时 SQLite 数据库运行 smoke test，避免污染真实学习记忆
@@ -62,6 +62,16 @@ app/
     experiment.py         # 实验工作流 Proposal 生成与诊断
   session/
     state.py              # 当前 CLI 会话的短期上下文
+  runtime/
+    command_router.py     # Slash command 路由
+    tool_executor.py      # 工具执行、策略判断和审计记录
+    approval.py           # 工具执行请求/结果模型
+    trace.py              # /runs 与 /trace 文本渲染
+  plugins/
+    base.py               # PluginContext 与默认插件注册
+    notes_plugin.py       # notes 工具插件
+    memory_plugin.py      # 记忆工具插件
+    workflow_plugin.py    # Workflow Proposal 工具插件
   storage/
     sqlite_store.py       # SQLite 状态、运行日志与 Proposal 存储
   workflows/
@@ -121,13 +131,12 @@ proposal_events Proposal 状态变化事件
 
 ```powershell
 python -m app.main "/runs"
-python -m app.main "/runs --detail"
 python -m app.main "/trace latest"
 ```
 
-`/runs` 会展示最近 Agent Run 的状态、工具调用数量、失败数量和工具耗时摘要。
-`/runs --detail` 会展示最近一次 Agent Run 的 trace，包含用户输入、运行状态、工具调用参数、审计信息、执行结果摘要与错误。
-`/trace <run_id>` 可以查看指定 run；不传 run id 时默认查看最近一次。
+`/runs` 会展示最近 Agent Run 的 Run ID、状态、工具调用数量、失败数量和工具耗时摘要。
+`/trace <run_id>` 会展示指定 run 的 trace；不传 run id 或使用 `latest` 时默认查看最近一次，包含用户输入、运行状态、工具调用参数、审计信息、执行结果摘要与错误。
+`/runs --detail` 等价于 `/trace latest`，仅作为旧入口兼容保留。
 
 如果本地已有旧版 `data/memory.json` 或 `data/proposals.json`，启动时会在对应 SQLite 表为空的情况下做一次非破坏性导入；不会删除旧 JSON 文件。
 
@@ -168,7 +177,6 @@ python scripts/smoke_test.py
 /help
 /session
 /runs
-/runs --detail
 /trace latest
 /save-last
 /tools
@@ -262,7 +270,7 @@ python -m app.main "/experiment 比较 40/50/60 摄氏度下的反应效率"
 python -m app.main "/proposal-detail"
 python -m app.main "/apply-proposal"
 python -m app.main "/diagnose 端口连接超时"
-python -m app.main "/runs --detail"
+python -m app.main "/trace latest"
 ```
 
 这个能力的定位是 Pilot：适合用于实习竞品调研、工作流抽象和 PoC 展示；在接入真实实验设备前，必须补充权限校验、人工确认、审计日志、设备状态检查、后台执行队列和急停机制。
@@ -283,9 +291,11 @@ python -m app.main "/runs --detail"
 
 ```powershell
 python evals/runner.py
+python scripts/eval_runner.py  # 兼容入口
+python scripts/eval_runner.py --summary-file data/eval-summary-local.json
 ```
 
-Runner 会把每条用例自动喂给 in-process `SimpleAgent`，输出通过率与失败明细。默认使用隔离临时 SQLite 数据库，不读取 `.env`，也不会污染真实学习记忆。需要保留评测数据库时可加 `--keep-db`。
+Runner 会把每条用例自动喂给 in-process `SimpleAgent`，输出总通过率、按 category 汇总、按 risk 汇总与失败明细。默认使用隔离临时 SQLite 数据库，不读取 `.env`，也不会污染真实学习记忆。需要保留评测数据库时可加 `--keep-db`；需要保存机器可读汇总时可用 `--summary-file`。
 
 ## 学习路线
 
@@ -296,7 +306,7 @@ Runner 会把每条用例自动喂给 in-process `SimpleAgent`，输出通过率
 3. 给 `notes/` 添加自己的学习笔记
 4. 接入大模型，观察工具调用过程
 5. 加入 SQLite，把记忆、会话、运行日志和 Proposal 升级为数据库
-6. 使用 `/runs --detail` 和 `/trace` 观察工具调用链路
+6. 使用 `/runs` 查看运行列表，使用 `/trace latest` 或 `/trace <run_id>` 观察工具调用链路
 7. 用 `evals/minimal_cases.jsonl` 固化最小质量线
 8. 加入 embedding 与向量检索，升级成 RAG plugin
 9. 加入 FastAPI 和前端页面

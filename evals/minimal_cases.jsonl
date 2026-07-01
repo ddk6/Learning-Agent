@@ -1,4 +1,4 @@
-{"id":"runtime-help-001","category":"runtime_command","input":"/help","expected_contains":["/runs --detail","/trace <run_id>","/tools"],"risk":"low"}
+{"id":"runtime-help-001","category":"runtime_command","input":"/help","expected_contains":["/trace <run_id>","兼容别名","/tools"],"risk":"low"}
 {"id":"tool-inventory-001","category":"tool_registry","input":"/tools","expected_contains":["当前本项目注册了","权限边界","confirmation=yes"],"risk":"low"}
 {"id":"notes-list-001","category":"knowledge_tool","input":"/notes","expected_contains":["agent.md"],"risk":"low"}
 {"id":"notes-read-001","category":"knowledge_tool","input":"/read agent.md","expected_contains":["最小 Agent 主循环"],"risk":"low"}
@@ -7,4 +7,4 @@
 {"id":"workflow-need-info-001","category":"workflow_proposal","input":"/experiment 帮我做实验","expected_contains":["Proposal 状态：need_info","需要补充"],"risk":"medium"}
 {"id":"workflow-ready-001","category":"workflow_proposal","input":"/experiment 比较 40/50/60 摄氏度下的反应效率","expected_contains":["Proposal 状态：ready","/apply-proposal"],"risk":"medium"}
 {"id":"workflow-detail-001","category":"workflow_proposal","input":"/proposal-detail","expected_contains":["实验工作流草案","温度梯度: 40 C, 50 C, 60 C"],"risk":"medium"}
-{"id":"trace-latest-001","category":"agentops_trace","input":"/runs --detail","expected_contains":["Agent Trace","Run ID","工具调用数"],"risk":"low"}
+{"id":"trace-latest-001","category":"agentops_trace","input":"/trace latest","expected_contains":["Agent Trace","Run ID","工具调用数"],"risk":"low"}

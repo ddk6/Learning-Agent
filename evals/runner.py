@@ -15,15 +15,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.agents.simple_agent import SimpleAgent  # noqa: E402
 from app.config import AppConfig  # noqa: E402
+from app.plugins import PluginContext, register_default_plugins  # noqa: E402
 from app.storage.sqlite_store import (  # noqa: E402
     SQLiteAppStore,
     SQLiteMemoryStore,
     SQLiteProposalStore,
     SQLiteSessionState,
 )
-from app.tools.experiment_tools import register_experiment_tools  # noqa: E402
-from app.tools.memory_tools import register_memory_tools  # noqa: E402
-from app.tools.note_tools import register_note_tools  # noqa: E402
 from app.tools.registry import ToolRegistry  # noqa: E402
 from app.workflows.state_machine import StateMachine  # noqa: E402
 
@@ -66,9 +64,12 @@ def main() -> int:
             database_file = Path(temp_dir) / "learning_agent_eval.db"
             results = run_cases(cases, database_file=database_file, fail_fast=args.fail_fast)
 
-    print_report(results, show_output=args.show_output)
+    summary = build_summary(results)
+    print_report(results, summary=summary, show_output=args.show_output)
     if args.results_file:
         append_results(args.results_file, results)
+    if args.summary_file:
+        write_summary(args.summary_file, summary, results)
 
     return 0 if all(result.passed for result in results) else 1
 
@@ -102,6 +103,11 @@ def parse_args() -> argparse.Namespace:
         "--results-file",
         type=Path,
         help="Append JSONL eval results to the given file.",
+    )
+    parser.add_argument(
+        "--summary-file",
+        type=Path,
+        help="Write one JSON summary report to the given file.",
     )
     return parser.parse_args()
 
@@ -221,10 +227,8 @@ def build_eval_agent(database_file: Path) -> SimpleAgent:
     )
     proposal_store = SQLiteProposalStore(sqlite_store, state_machine=state_machine)
 
-    # 工具注册顺序与 app.main.build_agent 保持一致，避免评测和真实 CLI 行为漂移。
-    register_memory_tools(registry, memory_store)
-    register_note_tools(registry, config.notes_dir)
-    register_experiment_tools(registry)
+    # Plugin registration mirrors app.main.build_agent to avoid eval/CLI drift.
+    register_default_plugins(registry, PluginContext(config=config, memory_store=memory_store))
 
     return SimpleAgent(
         config=config,
@@ -243,13 +247,69 @@ def create_kept_database_path() -> Path:
     return run_dir / "learning_agent_eval.db"
 
 
-def print_report(results: list[EvalResult], *, show_output: bool) -> None:
+def build_summary(results: list[EvalResult]) -> dict[str, Any]:
     total = len(results)
     passed = sum(1 for result in results if result.passed)
     failed = total - passed
+    return {
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "pass_rate": calculate_pass_rate(passed, total),
+        "by_category": group_summary(results, key=lambda result: result.category),
+        "by_risk": group_summary(results, key=lambda result: result.risk),
+    }
 
+
+def group_summary(results: list[EvalResult], *, key: Any) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[EvalResult]] = {}
+    for result in results:
+        grouped.setdefault(str(key(result)), []).append(result)
+    summary: dict[str, dict[str, Any]] = {}
+    for name, items in sorted(grouped.items()):
+        passed = sum(1 for item in items if item.passed)
+        summary[name] = {
+            "total": len(items),
+            "passed": passed,
+            "failed": len(items) - passed,
+            "pass_rate": calculate_pass_rate(passed, len(items)),
+        }
+    return summary
+
+
+def calculate_pass_rate(passed: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return round(passed / total, 4)
+
+
+def print_report(
+    results: list[EvalResult],
+    *,
+    summary: dict[str, Any],
+    show_output: bool,
+) -> None:
     print("# Eval Report")
-    print(f"Total: {total} | Passed: {passed} | Failed: {failed}")
+    print(
+        f"Total: {summary['total']} | Passed: {summary['passed']} | "
+        f"Failed: {summary['failed']} | Pass rate: {summary['pass_rate']:.2%}"
+    )
+    print("")
+
+    print("## By Category")
+    for category, item in summary["by_category"].items():
+        print(
+            f"- {category}: {item['passed']}/{item['total']} passed "
+            f"({item['pass_rate']:.2%})"
+        )
+    print("")
+
+    print("## By Risk")
+    for risk, item in summary["by_risk"].items():
+        print(
+            f"- {risk}: {item['passed']}/{item['total']} passed "
+            f"({item['pass_rate']:.2%})"
+        )
     print("")
 
     for result in results:
@@ -284,6 +344,26 @@ def append_results(path: Path, results: list[EvalResult]) -> None:
                 )
                 + "\n"
             )
+
+
+def write_summary(path: Path, summary: dict[str, Any], results: list[EvalResult]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+        "summary": summary,
+        "cases": [
+            {
+                "case_id": result.case_id,
+                "category": result.category,
+                "risk": result.risk,
+                "passed": result.passed,
+                "missing": result.missing,
+                "error": result.error,
+            }
+            for result in results
+        ],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def indent_text(text: str, prefix: str) -> str:

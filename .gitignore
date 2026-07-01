@@ -11,5 +11,6 @@ data/learning_agent.db
 data/learning_agent.db-shm
 data/learning_agent.db-wal
 data/eval-runs/
+data/eval-summary*.json
 evals/results*.jsonl
 notes/

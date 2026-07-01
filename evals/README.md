@@ -14,8 +14,11 @@ These cases are intentionally model-agnostic. Run them with:
 
 ```powershell
 python evals/runner.py
+python scripts/eval_runner.py  # compatibility wrapper
+python scripts/eval_runner.py --summary-file data/eval-summary-local.json
 ```
 
 The runner executes each case against an in-process `SimpleAgent`, compares every
 `expected_contains` item with the returned text, and reports pass/fail results.
-By default it uses an isolated temporary SQLite database and does not read `.env`.
+It also prints pass rates grouped by category and risk. By default it uses an isolated
+temporary SQLite database and does not read `.env`.

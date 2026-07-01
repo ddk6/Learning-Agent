@@ -13,12 +13,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.main import build_agent  # noqa: E402
+from app.runtime.command_router import CommandRouter  # noqa: E402
 from app.tools.experiment_tools import register_experiment_tools  # noqa: E402
 from app.tools.note_tools import register_note_tools  # noqa: E402
 from app.tools.memory_tools import register_memory_tools  # noqa: E402
 from app.tools.registry import ToolPolicyError, ToolRegistry  # noqa: E402
 from app.storage.sqlite_store import SQLiteAppStore, SQLiteMemoryStore  # noqa: E402
 from app.workflows.state_machine import StateMachine, StateMachineError  # noqa: E402
+from evals.runner import EvalResult, build_summary  # noqa: E402
 
 
 def assert_contains(text: str, expected: str) -> None:
@@ -242,11 +244,12 @@ def main() -> None:
         assert_contains(agent.run("/memory"), "已应用实验工作流 Proposal")
         runs = agent.run("/runs")
         assert_contains(runs, "最近 Agent Run 日志")
+        assert_contains(runs, "Run ID")
         assert_contains(runs, "tools=")
-        trace = agent.run("/runs --detail")
+        trace = agent.run("/trace latest")
         assert_contains(trace, "Agent Trace")
         assert_contains(trace, "Run ID")
-        assert_contains(agent.run("/trace latest"), "Agent Trace")
+        assert_contains(agent.run("/runs --detail"), "Agent Trace")
         assert_table_count_at_least(database_file, "agent_runs", 1)
         assert_table_count_at_least(database_file, "tool_calls", 1)
         assert_tool_call_audit(database_file, "plan_experiment_workflow", "proposal_flow")
@@ -268,6 +271,8 @@ def main() -> None:
     test_tool_permission_boundaries()
     test_experiment_tool()
     test_state_machine_config()
+    test_command_router()
+    test_eval_summary()
     test_architecture_note_exists()
 
     print("Smoke test passed.")
@@ -362,6 +367,42 @@ def test_state_machine_config() -> None:
     except StateMachineError:
         return
     raise AssertionError("Expected repeated applied event from applied state to be rejected.")
+
+
+def test_command_router() -> None:
+    router = CommandRouter(
+        {
+            "/hello": lambda rest, run_id: f"{run_id}:{rest}",
+        }
+    )
+    assert_contains(router.route("/hello world", "run-1"), "run-1:world")
+    assert_contains(router.route("/missing", "run-1"), "未知命令")
+
+
+def test_eval_summary() -> None:
+    results = [
+        EvalResult(
+            case_id="case-1",
+            category="runtime",
+            risk="low",
+            passed=True,
+            missing=[],
+            output="ok",
+        ),
+        EvalResult(
+            case_id="case-2",
+            category="runtime",
+            risk="medium",
+            passed=False,
+            missing=["x"],
+            output="",
+        ),
+    ]
+    summary = build_summary(results)
+    if summary["total"] != 2 or summary["passed"] != 1 or summary["failed"] != 1:
+        raise AssertionError(f"Unexpected eval summary totals: {summary}")
+    if summary["by_category"]["runtime"]["pass_rate"] != 0.5:
+        raise AssertionError(f"Unexpected category pass rate: {summary}")
 
 
 def test_architecture_note_exists() -> None:
