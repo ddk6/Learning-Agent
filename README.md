@@ -77,6 +77,7 @@ app/
 evals/
   README.md               # 评估集说明
   minimal_cases.jsonl     # 10 条最小 Agent Runtime 评估用例
+  runner.py               # 离线评估执行器
 notes/
   agent.md                # 入门笔记示例
   architecture-and-adr.md # 当前架构、流程、记忆边界、工具权限和 ADR 快照
@@ -278,7 +279,13 @@ python -m app.main "/runs --detail"
 - Proposal 详情
 - Agent trace 可见性
 
-这些用例先采用 `expected_contains` 方式描述验收条件，保持模型无关。后续可以增加 `evals/runner.py`，把每条用例自动喂给 `SimpleAgent`，输出任务完成率、工具选择准确率、审批触发率和 trace 完整度。
+这些用例先采用 `expected_contains` 方式描述验收条件，保持模型无关。可以直接运行：
+
+```powershell
+python evals/runner.py
+```
+
+Runner 会把每条用例自动喂给 in-process `SimpleAgent`，输出通过率与失败明细。默认使用隔离临时 SQLite 数据库，不读取 `.env`，也不会污染真实学习记忆。需要保留评测数据库时可加 `--keep-db`。
 
 ## 学习路线
 

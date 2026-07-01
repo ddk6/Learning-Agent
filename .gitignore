@@ -10,4 +10,6 @@ data/proposals.json
 data/learning_agent.db
 data/learning_agent.db-shm
 data/learning_agent.db-wal
+data/eval-runs/
+evals/results*.jsonl
 notes/

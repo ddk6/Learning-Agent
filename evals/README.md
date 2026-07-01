@@ -10,6 +10,12 @@ Each JSONL row uses this shape:
 {"id":"case-id","category":"runtime","input":"...","expected_contains":["..."],"risk":"low"}
 ```
 
-These cases are intentionally model-agnostic. A future eval runner can execute them against
-`python -m app.main` or an in-process `SimpleAgent`, then compare `expected_contains` with
-the returned text and persist pass/fail results as AgentOps metrics.
+These cases are intentionally model-agnostic. Run them with:
+
+```powershell
+python evals/runner.py
+```
+
+The runner executes each case against an in-process `SimpleAgent`, compares every
+`expected_contains` item with the returned text, and reports pass/fail results.
+By default it uses an isolated temporary SQLite database and does not read `.env`.
